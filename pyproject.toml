@@ -1,0 +1,114 @@
+[tool.poetry]
+name = "Mind Map Studio Backend"
+version = "0.10.0"
+description = "The project is a backend part of the DIAL Mind Map Studio"
+authors = ["Uladzislau Vishneuski <Uladzislau_Vishneuski@epam.com>"]
+homepage = "https://dialx.ai/"
+keywords = ["ai", "dial", "mind-map"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+fastapi = "^0.115.0"
+uvicorn = "^0.31.0"
+aiohttp = "^3.10.8"
+langchain-community = "^0.3.1"
+beautifulsoup4 = "^4.12.3"
+markdownify = "^0.13.1"
+langchain-openai = "^0.3.0"
+sentence-transformers = {version = "3.3.1", extras = ["openvino"]}
+faiss-cpu = "^1.9.0"
+aidial-sdk = "^0.20.0"
+aidial-client = "^0.0.1"
+torch = [
+    { markers = "sys_platform == 'darwin'", version = "2.3.1", source = "PyPI" },
+    { markers = "sys_platform != 'darwin'", version = "2.3.1+cpu", source = "pytorch" },
+]
+torchvision = [
+    { markers = "sys_platform == 'darwin'", version = "0.18.1", source = "PyPI" },
+    { markers = "sys_platform != 'darwin'", version = "0.18.1+cpu", source = "pytorch" },
+]
+pyjwt = "^2.10.1"
+langchain = "^0.3.13"
+langchain-core = "^0.3.28"
+langchain-unstructured = "0.1.6"
+numpy = "^1.22.4"
+pandas = "^2.2.3"
+scikit-learn = "^1.6.0"
+networkx = "3.3"
+python-dotenv = "^1.0.1"
+python-frontmatter = "^1.1.0"
+python-pptx = "^1.0.2"
+pdf2image = "^1.17.0"
+pymupdf = "^1.25.3"
+more-itertools = "10.1.0"
+docarray = "0.39.1"
+unstructured = {version = "0.16.14", extras = ["doc", "docx", "pdf", "ppt", "pptx", "xlsx"]}
+cachetools = "5.3.1"
+rank-bm25 = "^0.2.2"
+optimum = {extras = ["openvino"], version = "^1.24.0"}
+nltk = "3.9.1"
+openvino = "2024.6.0"
+pdfplumber = "^0.11.5"
+theine = "^0.4.4"
+pdfminer-six = "20231228"
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+
+[tool.poetry.group.lint.dependencies]
+flake8 = ">=6.0.0"
+black = { version = "^25.1.0", extras = ["jupyter"] }
+isort = "^5.12.0"
+pyright = "^1.1.324"
+autoflake = "^2.2.0"
+
+
+[tool.poetry.group.dev.dependencies]
+nox = "^2024.4.15"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+reportUnusedVariable = "error"
+reportIncompatibleMethodOverride = "error"
+exclude = [
+    ".git",
+    ".venv",
+    ".nox",
+    "**/__pycache__"
+]
+
+[tool.black]
+line-length = 80
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.nox
+  | \.__pycache__
+)/
+'''
+
+[tool.isort]
+line_length = 80
+profile = "black"
+
+[tool.autoflake]
+ignore_init_module_imports = true
+remove_all_unused_imports = true
+in_place = true
+recursive = true
+quiet = true
+exclude = [
+    "\\.venv",
+    "\\.nox",
+]
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"

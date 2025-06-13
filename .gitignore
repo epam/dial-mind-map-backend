@@ -1,0 +1,17 @@
+.tmp*
+*.ans
+*.log
+__pycache__
+.DS_Store
+.env
+venv
+.venv
+.idea
+.nox
+dist
+.vscode/launch.json
+embeddings_cache
+~*
+
+perf_test
+tests/manual/out.csv

@@ -1,0 +1,1 @@
+from .mind_map_generator import MindMapGenerator
