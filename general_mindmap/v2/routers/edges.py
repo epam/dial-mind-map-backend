@@ -3,14 +3,15 @@ from time import time
 from typing import Any, List
 from uuid import uuid4
 
+import faiss
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from langchain.schema.document import Document
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS, DistanceStrategy
 from pydantic import ValidationError
 
-from general_mindmap.models.request import AddEdgeRequest
 from general_mindmap.utils.graph_patch import embeddings_model
 from general_mindmap.v2.config import DIAL_URL
 from general_mindmap.v2.dial.client import DialClient
@@ -25,15 +26,16 @@ from general_mindmap.v2.routers.utils.errors import (
     timeout_after,
 )
 from general_mindmap.v2.utils.batch_file_reader import BatchFileReader
+from generator.common.constants import DataFrameCols as Col
+from generator.common.structs import AddEdgeRequest
 from generator.core.stages import EdgeProcessor
-from generator.utils.constants import DataFrameCols as Col
 
 TARGET_NUMBER_OF_EDGES = 3
 
 router = APIRouter()
 
 
-@router.post("/mindmaps/{mindmap:path}/graph/edges")
+@router.post("/v1/graph/edges")
 @timeout_after()
 async def add_edge(request: Request):
     start_time = str(time())
@@ -51,8 +53,10 @@ async def add_edge(request: Request):
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)
@@ -160,7 +164,6 @@ def get_closest_nodes(
 def get_node_pairs_with_sim(
     docstore: FAISS,
     node_by_id: dict[int, dict],
-    nodes: List[Any],
     pairs: List[tuple[Any, Any]],
 ) -> List[tuple[Any, Any, float]]:
     """
@@ -169,42 +172,66 @@ def get_node_pairs_with_sim(
     Returns:
         List of tuples (node_1, node_2, similarity_score)
     """
-    pairs_with_sim = []
+    if not pairs:
+        return []
 
+    unique_node_ids = set()
+    for node_1_id, node_2_id in pairs:
+        unique_node_ids.add(node_1_id)
+        unique_node_ids.add(node_2_id)
+
+    ordered_unique_ids = list(unique_node_ids)
+    node_texts = [
+        node_to_document(node_by_id[node_id]).page_content
+        for node_id in ordered_unique_ids
+    ]
+
+    embeddings = docstore._embed_documents(node_texts)
+    embeddings_np = np.array(embeddings, dtype=np.float32)
+
+    if docstore._normalize_L2:
+        faiss.normalize_L2(embeddings_np)
+
+    embedding_map = {
+        node_id: emb for node_id, emb in zip(ordered_unique_ids, embeddings_np)
+    }
+
+    pairs_with_sim = []
     for node_1_id, node_2_id in pairs:
         node_1 = node_by_id[node_1_id]
         node_2 = node_by_id[node_2_id]
+        emb1 = embedding_map[node_1_id]
+        emb2 = embedding_map[node_2_id]
 
-        node_1_text = node_to_document(node_1).page_content
-        search_results = docstore.similarity_search_with_score(
-            node_1_text, k=len(nodes)
-        )
+        score = 0.0
+        if docstore.distance_strategy == DistanceStrategy.EUCLIDEAN:
+            score = float(np.sum((emb1 - emb2) ** 2))
+        elif docstore.distance_strategy == DistanceStrategy.MAX_INNER_PRODUCT:
+            score = -float(np.dot(emb1, emb2))
+        elif docstore.distance_strategy == DistanceStrategy.COSINE:
+            score = 1 - float(
+                np.dot(emb1, emb2)
+                / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+            )
+        else:
+            score = float(np.sum((emb1 - emb2) ** 2))
 
-        node_2_id = node_2["data"]["id"]
-        similarity_score = None
-
-        for doc, score in search_results:
-            if doc.metadata["id"] == node_2_id:
-                similarity_score = score
-                break
-
-        if similarity_score is None:
-            similarity_score = 0.0
-
-        pairs_with_sim.append((node_1, node_2, similarity_score))
+        pairs_with_sim.append((node_1, node_2, score))
 
     return pairs_with_sim
 
 
-@router.post("/mindmaps/{mindmap:path}/graph/edges/auto")
+@router.post("/v1/graph/edges/auto")
 @timeout_after()
 async def generate_edges(request: Request):
     start_time = str(time())
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)
@@ -329,7 +356,7 @@ async def generate_edges(request: Request):
         )
 
         edge_df = await EdgeProcessor.strong_con_graph(
-            edge_df, get_node_pairs_with_sim, None, docstore, nodes, node_by_id
+            edge_df, get_node_pairs_with_sim, None, docstore, node_by_id
         )
 
         edges = [
@@ -374,15 +401,17 @@ async def generate_edges(request: Request):
         return JSONResponse(content=edges, headers={"ETag": etag})
 
 
-@router.delete("/mindmaps/{mindmap:path}/graph/edges/auto")
+@router.delete("/v1/graph/edges/auto")
 @timeout_after()
 async def delete_generate_edges(request: Request):
     start_time = str(time())
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)
@@ -423,15 +452,17 @@ async def delete_generate_edges(request: Request):
         return Response(headers={"ETag": etag})
 
 
-@router.delete("/mindmaps/{mindmap:path}/graph/edges/{edge_id}")
+@router.delete("/v1/graph/edges/{edge_id}")
 @timeout_after()
 async def delete_edge(request: Request, edge_id: str):
     start_time = str(time())
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)
@@ -483,7 +514,7 @@ async def delete_edge(request: Request, edge_id: str):
         return Response(headers={"ETag": etag})
 
 
-@router.put("/mindmaps/{mindmap:path}/graph/edges/{edge_id}")
+@router.put("/v1/graph/edges/{edge_id}")
 @timeout_after()
 async def change_edge(request: Request, edge_id: str):
     start_time = str(time())
@@ -508,8 +539,10 @@ async def change_edge(request: Request, edge_id: str):
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)

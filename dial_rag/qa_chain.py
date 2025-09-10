@@ -60,7 +60,7 @@ REF_PATTERN = re.compile(r"<\[(\d+)\]>")
 
 REF_HISTORY_PATTERN = re.compile(r"\[(\d+)\]")
 
-INCLUDED_ATTRIBUTES = ["source", "page_number", "title"]
+INCLUDED_ATTRIBUTES = ["source_display_name", "page_number", "title"]
 
 
 class ChatChainConfig(BaseModel):

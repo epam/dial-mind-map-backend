@@ -4,8 +4,6 @@ from typing import List, Optional, Tuple
 from general_mindmap.models.graph import Edge, Graph, GraphData, Node
 from general_mindmap.v2.models.edge_type import EdgeType
 
-MAX_FIRST_DEPTH_CONNECTIONS = 6
-
 
 def is_added(queue: Queue, id: str):
     temp = []
@@ -29,6 +27,7 @@ def get_subgraph(
     maxDepth: int,
     maxNodes: int,
     previous: Optional[str],
+    mode: str,
 ) -> Tuple[List[GraphData], List[GraphData]]:
     nodes = [item for item in graph.root if isinstance(item.data, Node)]
     edges = [item for item in graph.root if isinstance(item.data, Edge)]
@@ -79,7 +78,10 @@ def get_subgraph(
 
     first_depth_connections = adjacencyList.get(root, [])
     for target in first_depth_connections[
-        0 : min(MAX_FIRST_DEPTH_CONNECTIONS, len(first_depth_connections))
+        0 : min(
+            6 if mode == "universal" else 10_000,
+            len(first_depth_connections),
+        )
     ]:
         if target not in visitedNodes:
             currentLevelQueue.put({"id": target, "depth": 1})

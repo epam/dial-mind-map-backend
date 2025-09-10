@@ -1,17 +1,19 @@
 import logging
-import numpy as np
 import os
 from functools import cache
-from typing import List, Iterable
+from typing import Iterable, List
 
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+import numpy as np
 from langchain.schema.embeddings import Embeddings
+from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 
 from dial_rag.batched import batched_map_with_progress
 from dial_rag.content_stream import SupportsWriteStr
-from dial_rag.embeddings.detect_device import detect_device, DeviceType
-from dial_rag.resources.cpu_pools import run_in_indexing_embeddings_pool, run_in_query_embeddings_pool
-
+from dial_rag.embeddings.detect_device import DeviceType, detect_device
+from dial_rag.resources.cpu_pools import (
+    run_in_indexing_embeddings_pool,
+    run_in_query_embeddings_pool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +22,13 @@ logger = logging.getLogger(__name__)
 # but 128 works faster on CPU with openvino backend
 EMBEDDINGS_BATCH_SIZE = 128
 
-# Path to pre-downloaded aliakseilabanau/bge-small-en model for normal use in docker
-# aliakseilabanau/bge-small-en model name is used for the local runs only
-BGE_EMBEDDINGS_MODEL_NAME_OR_PATH = os.environ.get("BGE_EMBEDDINGS_MODEL_PATH", "aliakseilabanau/bge-small-en")
+BGE_EMBEDDINGS_MODEL_NAME_OR_PATH = os.environ.get(
+    "BGE_EMBEDDINGS_MODEL_PATH", "epam/bge-small-en"
+)
 
-BGE_EMBEDDINGS_DEVICE = detect_device(os.environ.get("BGE_EMBEDDINGS_DEVICE", DeviceType.AUTO))
+BGE_EMBEDDINGS_DEVICE = detect_device(
+    os.environ.get("BGE_EMBEDDINGS_DEVICE", DeviceType.AUTO)
+)
 
 MODEL_KWARGS_BY_DEVICE = {
     DeviceType.CPU: {
@@ -37,8 +41,8 @@ MODEL_KWARGS_BY_DEVICE = {
         "model_kwargs": {
             "torch_dtype": "float16",
             "attn_implementation": "sdpa",
-        }
-    }
+        },
+    },
 }
 
 
@@ -51,7 +55,7 @@ def bge_embedding_impl() -> HuggingFaceBgeEmbeddings:
         model_name=BGE_EMBEDDINGS_MODEL_NAME_OR_PATH,
         model_kwargs=MODEL_KWARGS_BY_DEVICE[device],
         encode_kwargs={
-            'normalize_embeddings': True,
+            "normalize_embeddings": True,
         },
         show_progress=True,
     )
@@ -74,10 +78,14 @@ class AsyncEmbeddings(Embeddings):
             bge_embedding_impl().embed_documents, texts
         )
 
-    async def aembed_documents_numpy(self, texts: List[str]) -> List[np.ndarray]:
+    async def aembed_documents_numpy(
+        self, texts: List[str]
+    ) -> List[np.ndarray]:
         # TODO : Use sentence-transformers directly to avoid List[float] <-> np.ndarray conversions
         embeddings = await self.aembed_documents(texts)
-        return [np.array(embedding, dtype=np.float32) for embedding in embeddings]
+        return [
+            np.array(embedding, dtype=np.float32) for embedding in embeddings
+        ]
 
     async def aembed_query(self, text: str) -> List[float]:
         return await run_in_query_embeddings_pool(
@@ -93,5 +101,5 @@ async def build_embeddings(texts: Iterable[str], stageio: SupportsWriteStr):
         texts,
         bge_embedding.aembed_documents_numpy,
         EMBEDDINGS_BATCH_SIZE,
-        file=stageio
+        file=stageio,
     )

@@ -11,6 +11,7 @@ from langchain_core.runnables import Runnable
 from dial_rag.document_record import DocumentRecord
 from dial_rag.index_record import ChunkMetadata
 from dial_rag.index_storage import SERIALIZATION_CONFIG
+from general_mindmap.models import attachment
 from general_mindmap.models.graph import GraphData
 from general_mindmap.utils.log_config import logger
 from general_mindmap.utils.tokens_queue import TokensQueue
@@ -193,68 +194,33 @@ async def run_chain(
     client: DialClient,
     content_key: str = "content",
     attachment_keys: Iterable[str] = tuple("attachment"),
-    existing_answer: Any | None = None,
     records: List[DocumentRecord] = [],
     chunks_by_doc: Dict[str, List[Any]] = {},
-    force_answer_generation: bool = False,
 ) -> None:
     active_docs = [doc for doc in docs if doc.get("active", True)]
 
-    if existing_answer and not force_answer_generation:
-        choice.append_content(existing_answer["details"])
-
-        choice.add_attachment(
-            type="application/vnd.dial.mindmap.graph.v1+json",
-            title="Founded graph node",
-            data=json.dumps([{"data": existing_answer}]),
-        )
-
-        refs = json.dumps(
-            await build_references(
-                existing_answer["details"], docs, nodes, client
-            )
-        )
-        choice.add_attachment(
-            type="application/vnd.dial.mindmap.references.v1+json",
-            title="Used references",
-            data=refs,
-        )
-
-        return
-
     full_content = ""
     tokens_queue = None
+    attachment_graph = None
     async for item in chain.astream(input):
         logging.debug(item)
         if content_key in item:
-            assert tokens_queue
-            result = tokens_queue.add(item[content_key])
+            if tokens_queue:
+                result = tokens_queue.add(item[content_key])
 
-            full_content += result
-            choice.append_content(result)
+                full_content += result
+                choice.append_content(result)
+            else:
+                full_content = item[content_key]
+                choice.append_content(full_content)
+
+                refs = json.dumps(
+                    await build_references(full_content, docs, nodes, client)
+                )
         for key in attachment_keys:
             if key in item:
                 if key == "attachment_graph":
-                    assert tokens_queue
-                    full_content += tokens_queue.tokens
-                    choice.append_content(tokens_queue.tokens)
-
-                    refs = json.dumps(
-                        await build_references(
-                            full_content, docs, nodes, client
-                        )
-                    )
-                    choice.add_attachment(
-                        type="application/vnd.dial.mindmap.references.v1+json",
-                        title="Used references",
-                        data=refs,
-                    )
-
-                    data = json.loads(item[key]["data"])
-                    data[0]["data"]["details"] = full_content
-                    item[key]["data"] = json.dumps(data)
-
-                    choice.add_attachment(**item[key])
+                    attachment_graph = item[key]
                 else:
                     cards = item[key]["content"]["nodes"]
 
@@ -292,3 +258,22 @@ async def run_chain(
                     tokens_queue = TokensQueue(
                         nodes_map=nodes_map, chunks_map=chunks_map
                     )
+
+    if tokens_queue:
+        full_content += tokens_queue.tokens
+        choice.append_content(tokens_queue.tokens)
+
+    refs = json.dumps(await build_references(full_content, docs, nodes, client))
+    choice.add_attachment(
+        type="application/vnd.dial.mindmap.references.v1+json",
+        title="Used references",
+        data=refs,
+    )
+
+    assert attachment_graph
+
+    data = json.loads(attachment_graph["data"])
+    data[0]["data"]["details"] = full_content
+    attachment_graph["data"] = json.dumps(data)
+
+    choice.add_attachment(**attachment_graph)

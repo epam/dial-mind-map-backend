@@ -7,7 +7,6 @@ from typing import Any, List, Tuple
 import aiohttp
 from fastapi import HTTPException, Request
 from langchain_community.vectorstores import FAISS
-from matplotlib.pyplot import flag
 from pydantic import SecretStr, ValidationError
 
 from dial_rag.index_storage import SERIALIZATION_CONFIG
@@ -96,6 +95,7 @@ class DialClient:
     _api_key: str
     _dial_url: str
     _folder: str
+    _raw_folder: str
     _metadata: Metadata
 
     _etag: str
@@ -108,6 +108,7 @@ class DialClient:
         cls, dial_url: str, api_key: str, folder: str, etag: str
     ) -> "DialClient":
         self = cls(dial_url, api_key, etag)
+        self._raw_folder = folder
         self._folder = f"{self._dial_url}/v1/{folder}"
         return self
 
@@ -418,6 +419,28 @@ class DialClient:
                 response.headers["ETag"],
             )
 
+    async def get_files_list(
+        self, path: str, params: str | None = None
+    ) -> Tuple[List[Any], str | None]:
+        logger.info(f"Get files list {path}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                (
+                    f"{self._dial_url}/v1/metadata/{self._raw_folder}{path}"
+                    + (f"?{params}" if params else "")
+                ),
+                headers={"api-key": self._api_key},
+            ) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=response.status)
+
+                response_json = await response.json()
+
+                return (
+                    [item for item in response_json["items"]],
+                    response_json.get("nextToken", None),
+                )
+
     async def read_file_and_etag(self, file_name: str) -> Tuple[Any, str]:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -493,7 +516,7 @@ class DialClient:
                 async with session.put(
                     self.make_url_without_extension(file_name),
                     headers=(
-                        {"Authorization": self._api_key}
+                        {"api-key": self._api_key}
                         | ({"If-Match": etag} if etag else {})
                     ),
                     data=data,
@@ -508,7 +531,7 @@ class DialClient:
             async with session.put(
                 self.make_url_without_extension(file_name),
                 headers=(
-                    {"Authorization": self._api_key} | {"If-Match": etag}
+                    {"api-key": self._api_key} | {"If-Match": etag}
                     if etag
                     else {}
                 ),
@@ -666,6 +689,52 @@ class DialClient:
 
                         if data["status"] != "IN_PROGRESS":
                             return
+
+                    if line.startswith(": heartbeat"):
+                        yield f"{line}\n\n"
+
+    async def subscribe_to_appearances(
+        self, request: Request, current_state: Any, last_file: str, theme: str
+    ):
+        yield f"data: {json.dumps(current_state.get(theme, {}), separators=(',',':'))}\n\n"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self._dial_url}/v1/ops/resource/subscribe",
+                json={
+                    "resources": [
+                        {
+                            "url": f"{self._folder}metadata.json".removeprefix(
+                                f"{self._dial_url}/v1/"
+                            )
+                        }
+                    ]
+                },
+                headers={"Authorization": self._api_key},
+                timeout=aiohttp.ClientTimeout(),
+            ) as response:
+                async for line in response.content:
+                    if await request.is_disconnected():
+                        return
+
+                    line = line.decode("utf-8").strip()
+
+                    if line.startswith("data:"):
+                        self._etag = ""
+                        await self.read_metadata()
+
+                        if last_file != self._metadata.appearances_file:
+                            assert self._metadata.appearances_file is not None
+                            last_file = self._metadata.appearances_file
+
+                            if last_file:
+                                data, _ = await self.read_file_and_etag(
+                                    last_file
+                                )
+                            else:
+                                data = {}
+
+                            yield f"data: {json.dumps(data.get(theme, {}), separators=(',',':'))}\n\n"
 
                     if line.startswith(": heartbeat"):
                         yield f"{line}\n\n"

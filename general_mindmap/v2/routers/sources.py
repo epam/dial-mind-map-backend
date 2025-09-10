@@ -1,4 +1,7 @@
 import base64
+import io
+import json
+import zipfile
 from io import BytesIO
 from time import time
 from typing import Any, Dict
@@ -34,8 +37,14 @@ from general_mindmap.v2.models.metadata import (
     HistoryStep,
 )
 from general_mindmap.v2.routers.utils.errors import timeout_after
-from general_mindmap.v2.utils.batch_file_reader import BatchFileReader
+from general_mindmap.v2.utils.batch_file_reader import (
+    BatchFileReader,
+    BatchRawFileReader,
+)
 from general_mindmap.v2.utils.batch_file_writer import BatchFileWriter
+from generator.common.structs import Document
+from generator.core.actions.docs import fetch_all_docs_content
+from generator.core.stages.doc_handler import DocHandler
 
 PPTX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -128,13 +137,15 @@ async def migrate_sources_from_old_format(
         pass
 
 
-@router.get("/mindmaps/{mindmap:path}/sources")
+@router.get("/v1/sources")
 @timeout_after()
 async def get_sources(request: Request):
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
 
@@ -175,6 +186,7 @@ async def get_sources(request: Request):
         for source, name in client._metadata.source_names.items()
         if name
     }
+    docs["params"] = client._metadata.params
 
     return JSONResponse(docs, headers={"ETag": client._etag})
 
@@ -240,11 +252,33 @@ async def add_file_source_background(
         status = f"Not enough tokens for indexing"
         record = None
 
+    doc_chunker = DocHandler(None)
+    docs_and_their_content = await fetch_all_docs_content(
+        [
+            Document(
+                id="TEMP",
+                url=f"{client._folder}{new_document['url']}",
+                type="FILE",
+                content_type=new_document["content_type"],
+            )
+        ],
+        client,
+    )
+    chunk_df, _ = await doc_chunker.chunk_docs(docs_and_their_content)
+
+    if chunk_df is None:
+        status = "Unable to index the source"
+        record = None
+
     new_document = new_document | status_to_json(status)
 
     index_file = {
         "docstore": "",
-        "chunks": [],
+        "chunks": (
+            chunk_df["lc_doc"].apply(lambda x: x.model_dump_json()).tolist()
+            if chunk_df is not None
+            else []
+        ),
     } | (
         {
             "rag_record": base64.b64encode(
@@ -296,11 +330,33 @@ async def add_link_source_background(
         status = f"Not enough tokens for indexing"
         record = None
 
+    doc_chunker = DocHandler(None)
+    docs_and_their_content = await fetch_all_docs_content(
+        [
+            Document(
+                id="TEMP",
+                url=f"{client._folder}{new_document['copy_url']}",
+                type="FILE",
+                content_type="text/html",
+            )
+        ],
+        client,
+    )
+    chunk_df, _ = await doc_chunker.chunk_docs(docs_and_their_content)
+
+    if chunk_df is None:
+        status = "Unable to index the source"
+        record = None
+
     new_document = new_document | status_to_json(status)
 
     index_file = {
         "docstore": "",
-        "chunks": [],
+        "chunks": (
+            chunk_df["lc_doc"].apply(lambda x: x.model_dump_json()).tolist()
+            if chunk_df is not None
+            else []
+        ),
     } | (
         {
             "rag_record": base64.b64encode(
@@ -322,14 +378,14 @@ async def add_link_source_background(
     await source_lock.release()
 
 
-@router.post(
-    "/mindmaps/{mindmap:path}/sources/{source_id}/versions/{version_id}/events"
-)
+@router.post("/v1/sources/{source_id}/versions/{version_id}/events")
 async def source_status(request: Request, source_id: str, version_id: int):
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         "",
     )
 
@@ -365,7 +421,7 @@ async def source_status(request: Request, source_id: str, version_id: int):
     raise HTTPException(404, "Source doesn't exist")
 
 
-@router.post("/mindmaps/{mindmap:path}/sources")
+@router.post("/v1/sources")
 @timeout_after()
 async def add_source(
     request: Request,
@@ -382,7 +438,9 @@ async def add_source(
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
     await client.open()
@@ -525,14 +583,14 @@ async def add_source(
     return JSONResponse(content=new_document, headers={"ETag": etag})
 
 
-@router.get(
-    "/mindmaps/{mindmap:path}/sources/{source_id}/versions/{version_id}/file"
-)
+@router.get("/v1/sources/{source_id}/versions/{version_id}/file")
 async def download_source(request: Request, source_id: str, version_id: int):
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
 
@@ -592,14 +650,16 @@ def filter_sources(sources: Any) -> Any:
     return sources
 
 
-@router.delete("/mindmaps/{mindmap:path}/sources/{source_id}")
+@router.delete("/v1/sources/{source_id}")
 async def delete_source(request: Request, source_id: str):
     start_time = str(time())
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client, client.create_lock(f"sources/{source_id}"):
         docs, _ = await client.read_file_by_name_and_etag(
@@ -759,7 +819,7 @@ async def delete_source(request: Request, source_id: str):
         return Response(headers={"ETag": await client.close()})
 
 
-@router.post("/mindmaps/{mindmap:path}/sources/{source_id}/versions")
+@router.post("/v1/sources/{source_id}/versions")
 @timeout_after()
 async def add_version(
     request: Request,
@@ -776,7 +836,9 @@ async def add_version(
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
     await client.open()
@@ -945,7 +1007,7 @@ async def add_version(
     return JSONResponse(content=new_document, headers={"ETag": etag})
 
 
-@router.post("/mindmaps/{mindmap:path}/sources/{source_id}/versions/{version}")
+@router.post("/v1/sources/{source_id}/versions/{version}")
 @timeout_after()
 async def try_process_again(
     request: Request,
@@ -963,7 +1025,9 @@ async def try_process_again(
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
     await client.open()
@@ -1072,9 +1136,7 @@ async def try_process_again(
     return JSONResponse(content=new_document, headers={"ETag": etag})
 
 
-@router.post(
-    "/mindmaps/{mindmap:path}/sources/{source_id}/versions/{version}/active"
-)
+@router.post("/v1/sources/{source_id}/versions/{version}/active")
 @timeout_after()
 async def change_active_version(
     request: Request,
@@ -1091,7 +1153,9 @@ async def change_active_version(
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
     await client.open()
@@ -1171,7 +1235,7 @@ async def change_active_version(
     return Response(status_code=200, headers={"ETag": etag})
 
 
-@router.post("/mindmaps/{mindmap:path}/sources/{source_id}")
+@router.post("/v1/sources/{source_id}")
 @timeout_after()
 async def change_name(
     request: Request,
@@ -1180,7 +1244,9 @@ async def change_name(
     async with await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client, client.create_lock(f"sources/{source_id}"):
         old_name = client._metadata.source_names.get(source_id, "")
@@ -1204,3 +1270,83 @@ async def change_name(
         )
 
         return Response(headers={"ETag": await client.close()})
+
+
+@router.get("/v1/sources/export")
+@timeout_after()
+async def export(request: Request):
+    client = await DialClient.create_with_folder(
+        DIAL_URL,
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
+        request.headers.get("etag", ""),
+    )
+
+    await client.read_metadata()
+
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        files, next_token = await client.get_files_list(
+            "/", "limit=1000&recursive=true"
+        )
+
+        while next_token != None:
+            new_files, next_token = await client.get_files_list(
+                "/", f"limit=1000&recursive=true&token={next_token}"
+            )
+
+            files += new_files
+
+        file_reader = BatchRawFileReader(client)
+        file_url_to_path = {}
+
+        for file in files:
+            full_url_to_file = f"{DIAL_URL}/v1/{file['url']}"
+
+            file_reader.add_file(full_url_to_file)
+            file_url_to_path[full_url_to_file] = full_url_to_file[
+                len(client._folder) :
+            ]
+
+        for result in await file_reader.read():
+            zipf.writestr(file_url_to_path[result[0]], result[1])
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=mind_map.zip"},
+    )
+
+
+@router.post("/v1/import")
+@timeout_after()
+async def import_file(
+    request: Request,
+    file: UploadFile,
+):
+    async with await DialClient.create_with_folder(
+        DIAL_URL,
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
+        request.headers.get("etag", ""),
+    ) as client:
+        zip_buffer = io.BytesIO(await file.read())
+
+        file_writer = BatchFileWriter(client)
+
+        with zipfile.ZipFile(zip_buffer, "r") as zipf:
+            for info in zipf.infolist():
+                if not info.is_dir():
+                    file_writer.add_raw_file(
+                        info.filename, zipf.read(info.filename)
+                    )
+
+        await file_writer.write()
+
+        return Response()

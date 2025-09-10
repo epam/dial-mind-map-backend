@@ -1,0 +1,5 @@
+default: >
+  Respond in the same language as the user input.
+  Ensure that all concept names, questions, and answers 
+  are provided in the user's language. 
+  If the language is unclear or uncertain, default to English.

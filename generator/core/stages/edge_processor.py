@@ -1,6 +1,6 @@
 import asyncio as aio
 from itertools import product
-from typing import Callable
+from typing import Callable, Optional
 
 import faiss
 import networkx as nx
@@ -9,15 +9,28 @@ import pandas as pd
 from langchain_community.vectorstores import FAISS
 from sklearn.metrics.pairwise import cosine_similarity
 
-from ...utils.constants import DataFrameCols as Col
-from ...utils.constants import FrontEndStatuses as Fes
-from ...utils.context import cur_llm_cost_handler
-from ...utils.frontend_handler import put_status
-from ...utils.logger import logging
+from generator.common.constants import ColVals
+from generator.common.constants import DataFrameCols as Col
+from generator.common.context import cur_llm_cost_handler
+from generator.common.logger import logging
+from generator.core.utils.constants import FrontEndStatuses as Fes
+from generator.core.utils.frontend_handler import put_status
 
 
 class EdgeProcessor:
+    """
+    Transforms a set of relations into a high-quality, navigable graph.
+
+    This class takes the concepts and relations from the orchestrator
+    and enhances the graph's structure. Its primary goal is to ensure
+    the final graph is **strongly connected**, meaning it's possible to
+    navigate from any concept to any other. It achieves this through a
+    three-stage process: adding edges for density, guaranteeing strong
+    connectivity, and then pruning redundant edges for clarity.
+    """
+
     def __init__(self, queue: aio.Queue):
+        """Initializes the processor with a queue for status updates."""
         self.queue = queue
 
     @staticmethod
@@ -25,8 +38,21 @@ class EdgeProcessor:
         concept_df: pd.DataFrame, cos: bool = False
     ) -> pd.DataFrame:
         """
-        Build a similarity matrix using the same Euclidean distance
-        as the docstore or cosine similarity.
+        Builds a similarity matrix from concept embeddings.
+
+        This matrix serves as a lookup table to find the most similar
+        concepts when new edges need to be added to the graph. It can
+        use either FAISS-based L2 (Euclidean) distance or standard
+        cosine similarity.
+
+        Args:
+            concept_df: The DataFrame of concepts with their embeddings.
+            cos: If True, use cosine similarity. If False (default),
+                use inverted Euclidean distance.
+
+        Returns:
+            A DataFrame where both index and columns are concept IDs,
+            and values are their similarity scores.
         """
         embeddings = np.stack(concept_df[Col.EMBEDDING])
         if not cos:
@@ -70,6 +96,27 @@ class EdgeProcessor:
         root_edge_weight: float = 5.0,
         rejected_edge_weight: float = 0.1,
     ) -> pd.DataFrame:
+        """
+        Adjusts edges from the root to ensure good graph entry points.
+
+        This method ensures the main root concept has a fixed number of
+        high-quality outgoing edges.
+        - If there are too many, it prunes the weakest ones,
+          prioritizing connections to other "hub" nodes.
+        - If there are too few, it adds new ones, first by connecting
+          to other hubs, then by finding the most similar concepts.
+
+        Args:
+            edge_df: The current DataFrame of edges.
+            root_id: The ID of the main root concept.
+            similarity_df: The concept similarity matrix for lookups.
+            max_num_root_out_edges: The target number of outgoing edges.
+            root_edge_weight: The high weight to assign to root edges.
+            rejected_edge_weight: The low weight for pruned root edges.
+
+        Returns:
+            The edge DataFrame with adjusted root edges.
+        """
         origins = edge_df[Col.ORIGIN_CONCEPT_ID]
         root_out_mask = (origins == root_id) & (
             edge_df[Col.TARGET_CONCEPT_ID] != root_id
@@ -137,7 +184,7 @@ class EdgeProcessor:
 
             selected_indices = selected_edges.index
             edge_df.loc[selected_indices, Col.WEIGHT] = root_edge_weight
-            edge_df.loc[selected_indices, Col.TYPE] = Col.RELATED_TYPE_VAL
+            edge_df.loc[selected_indices, Col.TYPE] = ColVals.RELATED
 
             root_out_indices = root_out_edges.index
             rejected_indices = root_out_indices.difference(selected_indices)
@@ -146,7 +193,7 @@ class EdgeProcessor:
         elif num_needed > 0:
             root_out_indices = root_out_edges.index
             edge_df.loc[root_out_indices, Col.WEIGHT] = root_edge_weight
-            edge_df.loc[root_out_indices, Col.TYPE] = Col.RELATED_TYPE_VAL
+            edge_df.loc[root_out_indices, Col.TYPE] = ColVals.RELATED
 
             existing_targets = (
                 root_out_edges[Col.TARGET_CONCEPT_ID].unique().tolist()
@@ -191,7 +238,7 @@ class EdgeProcessor:
                     Col.ORIGIN_CONCEPT_ID: root_id,
                     Col.TARGET_CONCEPT_ID: target,
                     Col.WEIGHT: root_edge_weight,
-                    Col.TYPE: Col.RELATED_TYPE_VAL,
+                    Col.TYPE: ColVals.RELATED,
                 }
                 new_relations.append(new_row)
 
@@ -201,7 +248,7 @@ class EdgeProcessor:
 
         else:
             edge_df.loc[root_out_edges.index, Col.WEIGHT] = root_edge_weight
-            edge_df.loc[root_out_edges.index, Col.TYPE] = Col.RELATED_TYPE_VAL
+            edge_df.loc[root_out_edges.index, Col.TYPE] = ColVals.RELATED
 
         return edge_df
 
@@ -209,6 +256,9 @@ class EdgeProcessor:
     def _get_neighbours(
         edge_df: pd.DataFrame, concept_id: int
     ) -> tuple[set[int], set[int]]:
+        """
+        Gets the incoming and outgoing neighbors for a given concept.
+        """
         all_origins = edge_df[Col.ORIGIN_CONCEPT_ID]
         out_relations = edge_df[all_origins == concept_id]
         targets = set(out_relations[Col.TARGET_CONCEPT_ID])
@@ -221,6 +271,21 @@ class EdgeProcessor:
 
     @staticmethod
     def _is_digraph_strong_con(edge_df: pd.DataFrame) -> tuple[list[set], bool]:
+        """
+        Checks if a directed graph is strongly connected.
+
+        A graph is strongly connected if for every pair of nodes (A, B),
+        there is a path from A to B and a path from B to A. This is
+        checked by finding the number of strongly connected components
+        (SCCs); if there is only one, the graph is strongly connected.
+
+        Args:
+            edge_df: The DataFrame of edges representing the graph.
+
+        Returns:
+            A tuple containing the list of SCCs (as sets of nodes) and
+            a boolean indicating if the graph is strongly connected.
+        """
         graph = nx.from_pandas_edgelist(
             edge_df,
             source=Col.ORIGIN_CONCEPT_ID,
@@ -245,6 +310,7 @@ class EdgeProcessor:
     def _get_node_pairs_with_sim(
         pairs: product, similarity_df: pd.DataFrame
     ) -> list:
+        """Looks up the similarity score for a list of node pairs."""
         return [
             (node_1, node_2, similarity_df.loc[node_1, node_2])
             for node_1, node_2 in pairs
@@ -252,6 +318,7 @@ class EdgeProcessor:
 
     @staticmethod
     def _get_weight_threshold(num_nodes: int) -> float:
+        """Gets a heuristic weight threshold for edge pruning."""
         match num_nodes:
             case value if value > 100:
                 return 2.882
@@ -267,6 +334,24 @@ class EdgeProcessor:
         num_min_out: int = 3,
         num_min_inc: int = 1,
     ):
+        """
+        Ensures all nodes have a minimum number of in/out edges.
+
+        This prevents "orphan" or "dead-end" nodes in the graph. It
+        iterates through each concept and, if the concept has too few
+        incoming or outgoing edges, it adds new ones by connecting to
+        the most similar non-neighboring concepts.
+
+        Args:
+            edge_df: The current DataFrame of edges.
+            concept_df: The DataFrame of all concepts.
+            similarity_df: The concept similarity matrix.
+            num_min_out: The minimum required number of outgoing edges.
+            num_min_inc: The minimum required number of incoming edges.
+
+        Returns:
+            The edge DataFrame with new edges added to meet minimums.
+        """
         new_edges = []
         for concept_id in concept_df.index:
             targets, origins = cls._get_neighbours(edge_df, concept_id)
@@ -321,6 +406,7 @@ class EdgeProcessor:
         similarity_df: pd.DataFrame,
         root_id: int,
     ):
+        """Orchestrates the initial edge addition phase."""
         edge_df = cls._adj_root_out_edges(edge_df, root_id, similarity_df)
         edge_df = cls._add_edges(edge_df, concept_df, similarity_df)
 
@@ -342,6 +428,7 @@ class EdgeProcessor:
         similarity_df: pd.DataFrame,
         root_index: int,
     ) -> pd.DataFrame:
+        """Extends the graph by adding edges to ensure density."""
         edge_df = relation_df.copy()
 
         edge_df = cls._ensure_edges(
@@ -356,19 +443,39 @@ class EdgeProcessor:
             inplace=True,
         )
 
-        return edge_df.fillna({Col.TYPE: Col.ART_EDGE_TYPE_VAL})
+        return edge_df.fillna({Col.TYPE: ColVals.ARTIFICIAL})
 
     @classmethod
     async def strong_con_graph(
         cls,
         edge_df: pd.DataFrame,
         get_node_pairs_w_sim_func: Callable,
-        similarity_df: pd.DataFrame | None,
+        similarity_df: Optional[pd.DataFrame],
         docstore: FAISS | None = None,
-        nodes: list | None = None,
         node_by_id: dict[int, dict] | None = None,
     ) -> pd.DataFrame:
-        """Edges with strict indices can't change direction."""
+        """Forces the graph to be strongly connected.
+
+        This method implements the core connectivity guarantee. It finds
+        all strongly connected components (SCCs) and, if there is more
+        than one, it systematically adds "bridge" edges. For each small
+        SCC, it creates a bidirectional link to the largest SCC by
+        finding the most similar pair of nodes between them.
+
+        Args:
+            edge_df: The current DataFrame of edges.
+            get_node_pairs_w_sim_func: A function to get similarity
+                scores.
+            similarity_df: The similarity matrix.
+            docstore: (Optional) A FAISS docstore for similarity
+                lookups.
+            nodes: (Optional) A list of nodes for the docstore.
+            node_by_id: (Optional) A dict mapping node IDs.
+
+        Returns:
+            The edge DataFrame with new bridge edges added to ensure it
+            represents a single strongly connected component.
+        """
         scc, is_strong_con = cls._is_digraph_strong_con(edge_df)
         if is_strong_con:
             return edge_df
@@ -385,7 +492,7 @@ class EdgeProcessor:
                 pairs_with_sim = get_node_pairs_w_sim_func(pairs, similarity_df)
             else:
                 pairs_with_sim = get_node_pairs_w_sim_func(
-                    pairs, docstore, nodes, node_by_id
+                    docstore, node_by_id, pairs
                 )
             two_top_sorted_pairs = sorted(
                 pairs_with_sim,
@@ -402,7 +509,7 @@ class EdgeProcessor:
                         {
                             Col.ORIGIN_CONCEPT_ID: src,
                             Col.TARGET_CONCEPT_ID: dst,
-                            Col.TYPE: Col.ART_EDGE_TYPE_VAL,
+                            Col.TYPE: ColVals.ARTIFICIAL,
                             Col.WEIGHT: 0.5,
                         }
                     )
@@ -419,6 +526,7 @@ class EdgeProcessor:
         concept_df: pd.DataFrame,
         similarity_df: pd.DataFrame,
     ) -> pd.DataFrame:
+        """Orchestrates the graph connection and cleanup process."""
         # Main root edges must not change direction
         edge_df = await cls.strong_con_graph(
             edge_df, cls._get_node_pairs_with_sim, similarity_df
@@ -448,9 +556,26 @@ class EdgeProcessor:
     def _remove_redundant_edges(
         cls, edge_df: pd.DataFrame, num_nodes: int
     ) -> pd.DataFrame:
+        """
+        Prunes unnecessary edges while preserving strong connectivity.
+
+        After adding many edges to ensure connectivity, this method
+        cleans up the graph. It iterates through the weakest edges and
+        removes each one, but only if the removal does not break the
+        graph's strongly connected property. This results in a minimal,
+        cleaner graph that is still fully navigable.
+
+        Args:
+            edge_df: The DataFrame of the dense, connected graph.
+            num_nodes: The total number of nodes in the graph.
+
+        Returns:
+            A pruned DataFrame representing a minimal strongly
+            connected graph.
+        """
         weight_threshold = cls._get_weight_threshold(num_nodes)
         weight_mask = edge_df[Col.WEIGHT] < weight_threshold
-        edge_df.loc[weight_mask, Col.TYPE] = Col.ART_EDGE_TYPE_VAL
+        edge_df.loc[weight_mask, Col.TYPE] = ColVals.ARTIFICIAL
 
         di_graph = nx.from_pandas_edgelist(
             edge_df,
@@ -485,7 +610,7 @@ class EdgeProcessor:
                 origin_mask = edge_df[Col.ORIGIN_CONCEPT_ID] == edge[0]
                 target_mask = edge_df[Col.TARGET_CONCEPT_ID] == edge[1]
                 needed_mask = origin_mask & target_mask
-                edge_df.loc[needed_mask, Col.TYPE] = Col.RELATED_TYPE_VAL
+                edge_df.loc[needed_mask, Col.TYPE] = ColVals.RELATED
 
         return edge_df
 
@@ -494,15 +619,14 @@ class EdgeProcessor:
         edge_df: pd.DataFrame,
         root_index: int,
     ) -> tuple[pd.DataFrame, int]:
+        """Performs final sorting, logging, and returns results."""
         edge_df = edge_df.sort_values(
             by=[Col.TYPE, Col.WEIGHT],
             ascending=[True, False],
             key=lambda col: (
                 col
                 if col.name != Col.TYPE
-                else col.map(
-                    {Col.RELATED_TYPE_VAL: 0, Col.ART_EDGE_TYPE_VAL: 1}
-                )
+                else col.map({ColVals.RELATED: 0, ColVals.ARTIFICIAL: 1})
             ),
         )
         llm_cost_handler = cur_llm_cost_handler.get()
@@ -517,6 +641,28 @@ class EdgeProcessor:
         relation_df: pd.DataFrame,
         root_index: int,
     ) -> tuple[pd.DataFrame, int]:
+        """
+        Enhances a set of relations to form a minimal, connected graph.
+
+        This is the main entry point for the class. It orchestrates a
+        multi-stage process to ensure the final graph is navigable and
+        clean:
+        1.  **Extend**: Adds new edges based on concept similarity to
+            ensure all nodes have a minimum number of connections.
+        2.  **Connect**: Guarantees the graph is strongly connected by
+            adding "bridge" edges between any disconnected components.
+        3.  **Prune**: Removes redundant "artificial" edges that are not
+            essential for maintaining strong connectivity.
+
+        Args:
+            concept_df: The final DataFrame of concepts.
+            relation_df: The DataFrame of relations to be enhanced.
+            root_index: The ID of the main root concept.
+
+        Returns:
+            A tuple containing the final, enhanced edge DataFrame and
+            the root index.
+        """
         if len(concept_df) == 1:
             return relation_df, root_index
 

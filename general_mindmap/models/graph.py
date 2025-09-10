@@ -8,6 +8,7 @@ class Node(BaseModel):
     label: str
     details: str | None = None  # TODO: can't be none
     question: str | None = None
+    questions: List[str] | None = None
     link: str | None = None
     icon: str | None = None
     status: str | None = None

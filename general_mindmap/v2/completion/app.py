@@ -50,9 +50,10 @@ async def get_subgraph_logic(
     depth = request["depth"]
     node = request.get("node", None)
     previous_node = request.get("previous_node", None)
+    max_nodes = request.get("max_nodes", 19)
 
     client = await DialClient.create_with_folder(
-        DIAL_URL or "", "!", mindmap_folder, ""
+        DIAL_URL, "audo", mindmap_folder, ""
     )
 
     await client.read_metadata()
@@ -63,6 +64,7 @@ async def get_subgraph_logic(
         not len(client._metadata.model_fields_set)
         or not client._metadata.edges_file
         or not client._metadata.nodes_file
+        or not client._metadata.documents_file
     ):
         raise HTTPException(status_code=404, message="Not found mindmap")
 
@@ -117,8 +119,9 @@ async def get_subgraph_logic(
         graph_data,
         node,
         depth,
-        19,
+        max_nodes,
         previous_node,
+        client._metadata.params.get("type", "universal"),
     )
 
     clear_nodes = [node.model_dump(exclude_none=True) for node in nodes]
@@ -202,6 +205,7 @@ class Mindmap(ChatCompletion):
         # TODO: check the case
         assert client._metadata.nodes_file
         assert client._metadata.edges_file
+        assert client._metadata.documents_file
 
         file_reader.add_file(client._metadata.nodes_file)
         file_reader.add_file(client._metadata.edges_file)
@@ -310,15 +314,6 @@ class Mindmap(ChatCompletion):
                     )
                 )
 
-        existing_answer = None
-        for node in nodes:
-            assert isinstance(node.data, graph.Node)
-            assert isinstance(request.messages[-1].content, str)
-            if (node.data.question or "").lower() == (
-                request.messages[-1].content or ""
-            ).lower():
-                existing_answer = node.data.model_dump(exclude_none=True)
-
         graph_data = Graph(nodes + edges)
 
         self.rag = Rag(
@@ -344,7 +339,10 @@ class Mindmap(ChatCompletion):
 
         with response.create_single_choice() as choice:
             rag_chain = self.rag.create_chain(
-                records, self.dial_url, SecretStr(request.api_key)
+                records,
+                self.dial_url,
+                SecretStr(request.api_key),
+                force_answer_generation,
             )
 
             try:
@@ -357,10 +355,8 @@ class Mindmap(ChatCompletion):
                     docs=docs,
                     nodes=nodes,
                     client=client,
-                    existing_answer=existing_answer,
                     records=records,
                     chunks_by_doc=chunks_by_doc,
-                    force_answer_generation=force_answer_generation,
                 )
             except RateLimitError as e:
                 raise HTTPException(

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from time import time
 from typing import Any, Dict, List
 
@@ -9,13 +10,6 @@ from langchain_community.vectorstores import FAISS
 from openai import RateLimitError
 
 from general_mindmap.models.graph import Node
-from general_mindmap.models.request import (
-    ApplyMindmapRequest,
-    Document,
-    EdgeData,
-    InitMindmapRequest,
-    NodeData,
-)
 from general_mindmap.utils.docstore import (
     embeddings_model,
     encode_docstore,
@@ -30,7 +24,10 @@ from general_mindmap.utils.graph_patch import (
 )
 from general_mindmap.v2.config import DIAL_URL
 from general_mindmap.v2.dial.client import DialClient
-from general_mindmap.v2.generator.base import RootNodeChunk, StatusChunk
+from general_mindmap.v2.generator.simple import (
+    GeneratorConfig,
+    TwoStageGenerator,
+)
 from general_mindmap.v2.models.metadata import (
     HistoryItem,
     HistoryItemType,
@@ -40,8 +37,18 @@ from general_mindmap.v2.routers.sources import add_generated_to_docs
 from general_mindmap.v2.utils.batch_file_reader import BatchFileReader
 from general_mindmap.v2.utils.batch_file_writer import BatchFileWriter
 from generator import MindMapGenerator
-from generator.utils.context import cur_run_id
-from generator.utils.misc import ContextPreservingAsyncIterator
+from generator.common.context import cur_run_id
+from generator.common.misc import ContextPreservingAsyncIterator
+from generator.common.structs import (
+    ApplyMindmapRequest,
+    Document,
+    EdgeData,
+    Generator,
+    InitMindmapRequest,
+    NodeData,
+    RootNodeChunk,
+    StatusChunk,
+)
 
 router = APIRouter()
 
@@ -56,10 +63,12 @@ def parse_llm_json(res: Any):
 
 
 async def generate(
-    docs_file: Dict[str, Any], client: DialClient, old_documents_file: str
+    docs_file: Dict[str, Any],
+    client: DialClient,
+    old_documents_file: str,
+    generator: Generator,
 ):
     start_time = str(time())
-    generator = MindMapGenerator(DIAL_URL, "auto", client)
 
     builded_docs = []
     for doc in docs_file["documents"]:
@@ -76,6 +85,8 @@ async def generate(
                     type="FILE",
                     content_type=doc.get("content_type", "text/html")
                     or "text/html",
+                    base_url=doc.get("url"),
+                    name=doc.get("name"),
                 )
             )
         else:
@@ -85,6 +96,8 @@ async def generate(
                     url=doc["url"],
                     type="LINK",
                     content_type="",
+                    base_url=doc.get("url"),
+                    name=doc.get("name"),
                 )
             )
 
@@ -176,6 +189,16 @@ async def generate(
                 nodes.append({"data": chunk.model_dump()})
             elif isinstance(chunk, RootNodeChunk):
                 root_id = chunk.root_id
+
+        for node_id, file in old_nodes_map.items():
+            changes.append(
+                HistoryItem(
+                    old_value=file,
+                    new_value="",
+                    type=HistoryItemType.SINGLE_NODE,
+                    id=node_id,
+                )
+            )
 
         new_edges_file = f"{start_time}_edges"
         batchFileWriter.add_file(new_edges_file, {"edges": edges})
@@ -312,6 +335,8 @@ def process_apply_docs(docs_file: Dict[str, Any], target_sources: List[str]):
             url=(doc["url"] if doc["type"] == "FILE" else doc["copy_url"]),
             type="FILE",
             content_type=doc.get("content_type", "text/html") or "text/html",
+            base_url=doc.get("url"),
+            name=doc.get("name"),
         )
         for doc in add_docs
     ]
@@ -322,6 +347,8 @@ def process_apply_docs(docs_file: Dict[str, Any], target_sources: List[str]):
             url=(doc["url"] if doc["type"] == "FILE" else doc["copy_url"]),
             type="FILE",
             content_type=doc.get("content_type", "text/html") or "text/html",
+            base_url=doc.get("url"),
+            name=doc.get("name"),
         )
         for doc in del_docs
     ]
@@ -335,7 +362,39 @@ async def apply(
     old_documents_file: str,
 ):
     start_time = str(time())
-    generator = MindMapGenerator(DIAL_URL, "auto", client)
+
+    builded_docs = []
+    for doc in docs_file["documents"]:
+        if not doc.get("active", True):
+            continue
+
+        if doc["type"] == "FILE" or "copy_url" in doc:
+            builded_docs.append(
+                Document(
+                    id=f"{doc['id']}.{doc.get('version', 1)}",
+                    url=(
+                        doc["url"] if doc["type"] == "FILE" else doc["copy_url"]
+                    ),
+                    type="FILE",
+                    content_type=doc.get("content_type", "text/html")
+                    or "text/html",
+                    base_url=doc.get("url"),
+                    name=doc.get("name"),
+                )
+            )
+        else:
+            builded_docs.append(
+                Document(
+                    id=f"{doc['id']}.{doc.get('version', 1)}",
+                    url=doc["url"],
+                    type="LINK",
+                    content_type="",
+                    base_url=doc.get("url"),
+                    name=doc.get("name"),
+                )
+            )
+
+    generator = MindMapGenerator(DIAL_URL, api_key="auto", file_storage=client)
 
     add_documents, del_documents = process_apply_docs(docs_file, target_sources)
 
@@ -354,10 +413,16 @@ async def apply(
         }
 
         req = ApplyMindmapRequest(
+            documents=builded_docs,
             add_documents=add_documents,
             del_documents=del_documents,
             graph_files=graph_files,
         )
+
+        for document in req.documents:
+            if document.type == "FILE":
+                if not document.url.startswith(client._folder):
+                    document.url = f"{client._folder}{document.url}"
 
         batchFileWriter = BatchFileWriter(client)
 
@@ -482,6 +547,16 @@ async def apply(
             elif isinstance(chunk, RootNodeChunk):
                 root_id = chunk.root_id
 
+        for node_id, file in old_nodes_map.items():
+            changes.append(
+                HistoryItem(
+                    old_value=file,
+                    new_value="",
+                    type=HistoryItemType.SINGLE_NODE,
+                    id=node_id,
+                )
+            )
+
         new_edges_file = f"{start_time}_edges"
         batchFileWriter.add_file(new_edges_file, {"edges": edges})
         changes.append(
@@ -570,10 +645,15 @@ async def apply_wrapper(
 
 
 async def generate_wrapper(
-    client: DialClient, docs_file: Dict[str, Any], old_documents_file: str
+    client: DialClient,
+    docs_file: Dict[str, Any],
+    old_documents_file: str,
+    generator: Generator,
 ):
     try:
-        async for message in generate(docs_file, client, old_documents_file):
+        async for message in generate(
+            docs_file, client, old_documents_file, generator
+        ):
             if not message.startswith("data: "):
                 continue
 
@@ -598,7 +678,7 @@ async def generate_wrapper(
         raise e
 
 
-@router.post("/mindmaps/{mindmap:path}/generate")
+@router.post("/v1/generate")
 async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
     request_body = None
     if (await request.body()).strip():
@@ -609,7 +689,9 @@ async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
     client = await DialClient.create_with_folder(
         DIAL_URL or "",
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
 
@@ -661,19 +743,34 @@ async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
             old_documents_file,
         )
     else:
+        if client._metadata.params.get("type", "universal") == "universal":
+            generator = MindMapGenerator(
+                DIAL_URL, api_key="auto", file_storage=client
+            )
+        else:
+            _config = GeneratorConfig(
+                model=client._metadata.params.get("model", ""),
+                prompt=client._metadata.params.get("prompt", ""),
+                dial_url=DIAL_URL,
+                api_key="auto",
+            )
+            generator = TwoStageGenerator(_config)
+
         background_tasks.add_task(
-            generate_wrapper, client, docs_file, old_documents_file
+            generate_wrapper, client, docs_file, old_documents_file, generator
         )
 
     return Response()
 
 
-@router.post("/mindmaps/{mindmap:path}/generation_status")
+@router.post("/v1/generation_status")
 async def generation_status(request: Request):
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         "",
     )
 
@@ -686,3 +783,39 @@ async def generation_status(request: Request):
         client.subscribe_to_generate(request, data),
         media_type="text/event-stream",
     )
+
+
+@router.post("/v1/generate/params")
+async def edit_params(request: Request):
+    start_time = time()
+
+    async with await DialClient.create_with_folder(
+        DIAL_URL,
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
+        request.headers.get("etag", ""),
+    ) as client:
+        if "last_change" not in client._metadata.model_fields_set:
+            client._metadata.last_change = str(start_time)
+
+        old_params = deepcopy(client._metadata.params)
+
+        client._metadata.params |= await request.json()
+
+        client._metadata.history.append(
+            client._metadata,
+            HistoryStep(
+                user="USER",
+                changes=[
+                    HistoryItem(
+                        old_value=json.dumps(old_params),
+                        new_value=json.dumps(client._metadata.params),
+                        type=HistoryItemType.PARAMS,
+                    ),
+                ],
+            ),
+        )
+
+        return Response(headers={"ETag": await client.close()})

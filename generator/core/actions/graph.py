@@ -1,100 +1,127 @@
+import logging
 import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from fastapi import HTTPException
+from pydantic import ValidationError
 
-from ...chainer.constants import FieldNames as Fn
-from ...utils.constants import DataFrameCols as Col
-from ...utils.constants import DefaultValues as Dv
-from ...utils.constants import OtherBackEndConstants as Bec
-from ...utils.constants import Patterns as Pat
-from ...utils.exceptions import ApplyException
-from ...utils.logger import logging
-from ...utils.misc import is_valid_uuid, split_list_by_indices
-from ..structs import MindMapData
+from generator.adapter import GMContract as Gmc
+from generator.adapter import GraphFilesAdapter, translate_graph_files
+from generator.common.constants import ColVals
+from generator.common.constants import DataFrameCols as Col
+from generator.common.constants import FieldNames as Fn
+from generator.common.exceptions import ApplyException
+from generator.common.structs import GraphFiles, NodesFile
+from generator.core.structs import MindMapData
+from generator.core.utils.constants import DefaultValues as Dv
+from generator.core.utils.constants import EdgeWeights as Ew
+from generator.core.utils.constants import Patterns as Pat
+from generator.core.utils.misc import is_valid_uuid
+
 from .references import (
-    extract_citations,
     extract_facts_with_sources,
     extract_facts_with_sources_and_fix_old,
+    extract_source_ids,
 )
 
 
 def validate_graph(
-    graph_files: dict[str, Any],
+    in_graph_files: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str | Any]]]:
     """
-    Determine problematic nodes, remove them from graph files,
-    and return their data together with updated graph files.
+    Validates graph nodes, removing those with invalid sources.
+
+    An invalid source is one that:
+    - Points to a non-existent or already invalidated node.
+    - Is explicitly marked as 'no_source'.
+    - Is a document citation with an improper format (e.g., not
+      "1.2.3").
+
+    The function iteratively removes problematic nodes and any other
+    nodes that depend on them, handling cascading invalidations.
+
+    Args:
+        in_graph_files: A dictionary containing graph data, including
+          nodes and the root ID.
+
+    Returns:
+        A tuple containing the updated graph_files with invalid nodes
+        removed, and a list of the data from the removed nodes.
+
+    Raises:
+        HTTPException: If the root node is missing or becomes invalid.
     """
     logging.info("Validate graph: Start")
-    nodes_file = graph_files[Bec.NODES_FILE]
+    try:
+        graph_files = translate_graph_files(in_graph_files)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid graph data structure: {e}"
+        )
 
-    # Mind map without root is invalid
-    root_id = nodes_file[Bec.ROOT_KEY]
-    if root_id is None:
-        raise HTTPException(status_code=400, detail="No root node")
+    nodes_file = graph_files.nodes_file
+    root_id = nodes_file.root_id
+
+    if not root_id:
+        raise HTTPException(
+            status_code=400, detail="No root node found in graph files."
+        )
 
     # Convert to node_df for easier data modifications
-    nodes = nodes_file[Bec.NODES_KEY]
-    nodes_data = [node[Bec.DATA_KEY] for node in nodes]
+    nodes = nodes_file.nodes
+    nodes_data = [node.data.model_dump() for node in nodes]
     node_df = pd.DataFrame(nodes_data)
 
     # Convert node details to list of facts and sources
     node_df[Col.ANSWER] = None
     empty_answers = node_df[Col.ANSWER].isna()
     node_df.loc[empty_answers, Col.ANSWER] = node_df.loc[
-        empty_answers, Bec.ANSWER_STR
+        empty_answers, Gmc.ANSWER_STR
     ].apply(lambda answer_str: extract_facts_with_sources(answer_str))
 
-    is_metadata_in_cols = Bec.METADATA in node_df.columns
-
     problematic_ids = set()
-    node_ids = node_df[Bec.NODE_ID].tolist()
+    all_node_ids = set(node_df[Gmc.NODE_ID].tolist())
+
     # Iterative process to handle cascading problems
     while True:
         iteration_problematic_ids = set()
-        for _, row in node_df.iterrows():
-            is_metadata_present = isinstance(row[Bec.METADATA], dict)
+        valid_node_ids = all_node_ids - problematic_ids
 
-            node_id = row[Bec.NODE_ID]
+        for _, row in node_df.iterrows():
+            has_metadata = row[Gmc.METADATA] is not None
+
+            node_id = row[Gmc.NODE_ID]
             if node_id in problematic_ids:
                 continue
 
-            facts_list: list[dict[str, str | list[str]]] = row[Col.ANSWER]
+            facts_list: list[dict[str, str | list[str]]] = list(row[Col.ANSWER])
+            is_node_problematic = False
+
             for fact in facts_list:
-                is_fact_valid = True
                 for source_id in fact[Fn.SOURCE_IDS]:
                     # If source is a node
                     if source_id.isdigit() or is_valid_uuid(source_id):
-                        if source_id not in node_ids + problematic_ids:
-                            iteration_problematic_ids.add(node_id)
-                            is_fact_valid = False
+                        if source_id not in valid_node_ids:
+                            is_node_problematic = True
                             break
                     # If no source
                     elif source_id == Dv.NO_SOURCE_ID:
-                        iteration_problematic_ids.add(node_id)
-                        is_fact_valid = False
+                        is_node_problematic = True
                         break
                     # If node has metadata, it is not None,
                     # and source is document: make sure that
                     # it has a version defined (has 3 numbers, not 2)
-                    elif (
-                        is_metadata_in_cols
-                        and is_metadata_present
-                        and "." in source_id
-                    ):
+                    elif has_metadata and "." in source_id:
                         parts = source_id.split(".")
                         if len(parts) != 3 or any(
                             not part.isdigit() for part in parts
                         ):
-                            iteration_problematic_ids.add(node_id)
-                            is_fact_valid = False
+                            is_node_problematic = True
                             break
-                    else:
-                        continue
-                if not is_fact_valid:
+                if is_node_problematic:
+                    iteration_problematic_ids.add(node_id)
                     break
 
         if not iteration_problematic_ids:
@@ -102,132 +129,65 @@ def validate_graph(
 
         problematic_ids.update(iteration_problematic_ids)
 
-    # Determine problematic list indices by problematic node_ids
-    mask = node_df[Bec.NODE_ID].isin(problematic_ids)
-    problematic_indices = node_df.index[mask].tolist()
-
-    # Get list of valid nodes and data of problematic nodes
-    problematic_nodes, other_nodes = split_list_by_indices(
-        nodes, problematic_indices
-    )
-    problematic_nodes_data = [node[Bec.DATA_KEY] for node in problematic_nodes]
+    valid_nodes = [
+        node for node in nodes_file.nodes if node.data.id not in problematic_ids
+    ]
+    problematic_nodes_data = [
+        node.data.model_dump()
+        for node in nodes_file.nodes
+        if node.data.id in problematic_ids
+    ]
 
     # If root is invalid
     if root_id in problematic_ids:
         raise HTTPException(status_code=400, detail="Root is invalid")
 
     # Pack results back to graph files
-    nodes_file[Bec.NODES_KEY] = other_nodes
-    nodes_file[Bec.ROOT_KEY] = root_id
-    graph_files[Bec.NODES_FILE] = nodes_file
+    updated_nodes_file = NodesFile(nodes=valid_nodes, root_id=root_id)
+    updated_graph_files = GraphFiles(
+        nodes_file=updated_nodes_file, edges_file=graph_files.edges_file
+    )
+
+    aliased_model_instance = GraphFilesAdapter.model_validate(
+        updated_graph_files
+    )
+    out_graph_files = aliased_model_instance.model_dump(by_alias=True)
 
     logging.info("Validate graph: End")
 
-    return graph_files, problematic_nodes_data
-
-
-def prep_node_df_for_add(
-    node_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, int, int]:
-    node_df["new"] = 0
-    new_node_id = int(node_df.index.max()) + 1
-
-    all_part_ids = [
-        item
-        for sublist in node_df[Col.FLAT_PART_ID]
-        if isinstance(sublist, list) and len(sublist) > 0
-        for item in sublist
-    ]
-    max_prev_part_id = max(all_part_ids) if all_part_ids else 0
-    return node_df, max_prev_part_id, new_node_id
-
-
-def handle_manual_nodes(node_df: pd.DataFrame) -> pd.DataFrame:
-    inconsistent_nan_mask = (
-        node_df[Col.LVL].isna() != node_df[Col.CLUSTER_ID].isna()
-    )
-
-    if np.any(inconsistent_nan_mask):
-        raise ApplyException(
-            f"Inconsistent NaN values found between '{Col.LVL}'"
-            f" and '{Col.CLUSTER_ID}'. "
-            "Expected them to be either both NaN or both non-NaN."
-        )
-
-    mask = node_df[Col.LVL].isna() & node_df[Col.CLUSTER_ID].isna()
-
-    if not mask.any():
-        return node_df
-
-    if node_df[Col.CLUSTER_ID].notna().any():
-        max_cluster_id = node_df[Col.CLUSTER_ID].max()
-        start_cluster_id = int(max_cluster_id) + 1
-    else:
-        start_cluster_id = Dv.START_CLUSTER_ID
-
-    num_rows_to_update = mask.sum()
-
-    # Generate cluster_ids in groups of 5
-    new_cluster_ids = [
-        start_cluster_id + (i // 5) for i in range(num_rows_to_update)
-    ]
-
-    node_df.loc[mask, Col.LVL] = 1
-    node_df.loc[mask, Col.CLUSTER_ID] = new_cluster_ids
-
-    return node_df
-
-
-def form_flat_part_ids(node_df: pd.DataFrame) -> pd.DataFrame:
-    citation_col = node_df[Col.CITATION]
-    citations = sorted(set().union(*citation_col))
-    citation_to_flat_part_id_ser = pd.Series(
-        {
-            citation: flat_part_id  # Start flat_part_id from 1
-            for flat_part_id, citation in enumerate(
-                citations, Dv.START_FLAT_PART_ID
-            )
-        }
-    )
-    node_df[Col.FLAT_PART_ID] = citation_col.apply(
-        lambda _citations: citation_to_flat_part_id_ser.reindex(
-            _citations
-        ).tolist()
-    )
-
-    return node_df
+    return out_graph_files, problematic_nodes_data
 
 
 def process_graph(
     graph_files: dict[str, Any],
 ) -> tuple[MindMapData, dict[str, int]]:
     """ID Map saves correspondence between int ids and uuids."""
-    nodes_file = graph_files[Bec.NODES_FILE]
+    nodes_file = graph_files[Gmc.NODES_FILE]
 
     # Get Root ID
-    root_id = nodes_file[Bec.ROOT_KEY]
+    root_id = nodes_file[Gmc.ROOT_KEY]
     if root_id is None:
         raise HTTPException(status_code=400, detail="No root node")
 
     # Create Node DF
     nodes_data = []
-    nodes = nodes_file[Bec.NODES_KEY]
+    nodes = nodes_file[Gmc.NODES_KEY]
     for node in nodes:
-        node_data_row = node[Bec.DATA_KEY].copy()
+        node_data_row = node[Gmc.DATA_KEY].copy()
         if (
-            Bec.METADATA in node_data_row.keys()
-            and node_data_row[Bec.METADATA] is not None
+            Gmc.METADATA in node_data_row.keys()
+            and node_data_row[Gmc.METADATA] is not None
         ):
             # Extract metadata fields and add them to the main node data
-            metadata = node_data_row.pop(Bec.METADATA)
+            metadata = node_data_row.pop(Gmc.METADATA)
             # Bug with source in fact.
-            for answer in metadata[Bec.ANSWER]:
+            for answer in metadata[Gmc.ANSWER]:
                 fact_string = answer.get(Fn.FACT, "")
                 cleaned_fact = re.sub(Pat.GENERAL_CITATION, "", fact_string)
                 answer[Fn.FACT] = cleaned_fact
             node_data_row.update(metadata)
         else:
-            keys_to_set = [Bec.ANSWER, Bec.LVL, Bec.CLUSTER_ID]
+            keys_to_set = [Gmc.ANSWER, Gmc.LVL, Gmc.CLUSTER_ID]
             for key in keys_to_set:
                 node_data_row[key] = None
         nodes_data.append(node_data_row)
@@ -263,12 +223,12 @@ def process_graph(
 
     # Deal with node_df columns
     node_col_map = {
-        Bec.NAME: Col.NAME,
-        Bec.QUESTION: Col.QUESTION,
-        Bec.ANSWER_STR: Col.ANSWER_STR,
-        Bec.ANSWER: Col.ANSWER,
-        Bec.LVL: Col.LVL,
-        Bec.CLUSTER_ID: Col.CLUSTER_ID,
+        Gmc.NAME: Col.NAME,
+        Gmc.QUESTION: Col.QUESTION,
+        Gmc.ANSWER_STR: Col.ANSWER_STR,
+        Gmc.ANSWER: Col.ANSWER,
+        Gmc.LVL: Col.LVL,
+        Gmc.CLUSTER_ID: Col.CLUSTER_ID,
     }
     cols_to_keep = [
         col for col in node_col_map.keys() if col in node_df.columns
@@ -294,45 +254,47 @@ def process_graph(
         )
 
     # Extract citations and flat_part_ids
-    node_df[Col.CITATION] = node_df[Col.ANSWER].apply(extract_citations)
-    node_df = form_flat_part_ids(node_df)
+    node_df[Col.CITATION] = node_df[Col.ANSWER].apply(extract_source_ids)
+    node_df = _form_flat_part_ids(node_df)
 
     # Map Root to new ID
-    root_id = id_map.get(root_id, int(root_id))
+    valid_root_id = id_map.get(root_id)
+    if valid_root_id is None:
+        valid_root_id = int(root_id)
     # Add root to the nodes
-    node_df.loc[root_id, [Col.LVL, Col.CLUSTER_ID]] = (
-        Col.ROOT_LVL_VAL,
-        Col.ROOT_CLUSTER_VAL,
-    )
-    node_df = handle_manual_nodes(node_df)
+    node_df.loc[valid_root_id, [Col.LVL, Col.CLUSTER_ID]] = [
+        ColVals.UNDEFINED,
+        ColVals.UNDEFINED,
+    ]
+    node_df = _handle_manual_nodes(node_df)
 
     # Create Edge DF
-    edges_file = graph_files[Bec.EDGES_FILE]
+    edges_file = graph_files[Gmc.EDGES_FILE]
 
     edges_data = []
-    edges = edges_file[Bec.EDGE_KEY]
+    edges = edges_file[Gmc.EDGE_KEY]
     for edge in edges:
         edge_data_row = dict()
-        edge_data = edge[Bec.DATA_KEY]
+        edge_data = edge[Gmc.DATA_KEY]
 
-        edge_data_row[Col.ID] = edge_data[Bec.EDGE_ID]
+        edge_data_row[Col.ID] = edge_data[Gmc.EDGE_ID]
 
-        if edge_data[Bec.SOURCE] == "nan" or edge_data[Bec.TARGET] == "nan":
+        if edge_data[Gmc.SOURCE] == "nan" or edge_data[Gmc.TARGET] == "nan":
             continue
-        edge_data_row[Col.ORIGIN_CONCEPT_ID] = edge_data[Bec.SOURCE]
-        edge_data_row[Col.TARGET_CONCEPT_ID] = edge_data[Bec.TARGET]
+        edge_data_row[Col.ORIGIN_CONCEPT_ID] = edge_data[Gmc.SOURCE]
+        edge_data_row[Col.TARGET_CONCEPT_ID] = edge_data[Gmc.TARGET]
 
-        edge_type = edge_data.get(Bec.TYPE)
+        edge_type = edge_data.get(Gmc.TYPE)
         # noinspection PyUnreachableCode
         match edge_type:
-            case Bec.INIT:
-                edge_data_row[Col.TYPE] = Col.ART_EDGE_TYPE_VAL
-            case Bec.GENERATED | Bec.MANUAL:
-                edge_data_row[Col.TYPE] = Col.RELATED_TYPE_VAL
+            case Gmc.INIT:
+                edge_data_row[Col.TYPE] = ColVals.ARTIFICIAL
+            case Gmc.GENERATED | Gmc.MANUAL:
+                edge_data_row[Col.TYPE] = ColVals.RELATED
             case _:
                 raise ApplyException("Invalid edge type in the mind map.")
 
-        edge_weight = edge_data.get(Bec.WEIGHT)
+        edge_weight = edge_data.get(Gmc.WEIGHT)
         if edge_weight is not None and edge_weight != "nan":
             edge_data_row[Col.WEIGHT] = float(edge_weight)
         else:
@@ -352,12 +314,155 @@ def process_graph(
         edge_df[Col.TARGET_CONCEPT_ID] = target_concept_ids.replace(id_map)
 
     return (
-        MindMapData(node_df=node_df, edge_df=edge_df, root_id=root_id),
+        MindMapData(node_df=node_df, edge_df=edge_df, root_id=valid_root_id),
         id_map,
     )
 
 
-def filter_by_document_id(
+def prep_node_df_for_add(
+    node_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, int, int]:
+    node_df["new"] = 0
+    new_node_id = int(node_df.index.max()) + 1
+
+    all_part_ids = [
+        item
+        for sublist in node_df[Col.FLAT_PART_ID]
+        if isinstance(sublist, list) and len(sublist) > 0
+        for item in sublist
+    ]
+    max_prev_part_id = max(all_part_ids) if all_part_ids else 0
+    return node_df, max_prev_part_id, new_node_id
+
+
+def filter_graph_by_docs(
+    graph_data: MindMapData, del_doc_ids: list[str]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Filters nodes and edges, removing any associated with the given
+    document IDs.
+    """
+    node_df = _filter_by_document_id(graph_data.node_df, del_doc_ids)
+    valid_indices = set(node_df.index)
+    edge_df = graph_data.edge_df
+    if not edge_df.empty:
+        edge_df = edge_df[
+            edge_df[Col.ORIGIN_CONCEPT_ID].isin(valid_indices)
+            & edge_df[Col.TARGET_CONCEPT_ID].isin(valid_indices)
+        ]
+    return node_df, edge_df
+
+
+def recalculate_edge_weights(
+    edge_df: pd.DataFrame, root_id: Any
+) -> pd.DataFrame:
+    """Applies default weights to edges that don't have them."""
+    if Col.WEIGHT not in edge_df.columns:
+        edge_df[Col.WEIGHT] = np.nan
+    empty_weight_mask = edge_df[Col.WEIGHT].isnull()
+    if not empty_weight_mask.any():
+        return edge_df
+
+    edge_df.loc[empty_weight_mask, Col.WEIGHT] = Ew.DEFAULT_EDGE_WEIGHT
+    edge_df.loc[
+        empty_weight_mask & (edge_df[Col.TYPE] == ColVals.ARTIFICIAL),
+        Col.WEIGHT,
+    ] = Ew.ARTIFICIAL_EDGE_WEIGHT
+    edge_df.loc[
+        empty_weight_mask & (edge_df[Col.TYPE] == ColVals.RELATED),
+        Col.WEIGHT,
+    ] = Ew.RELATED_EDGE_WEIGHT
+    root_mask = (edge_df[Col.ORIGIN_CONCEPT_ID] == root_id) | (
+        edge_df[Col.TARGET_CONCEPT_ID] == root_id
+    )
+    edge_df.loc[
+        root_mask & (edge_df[Col.TYPE] == ColVals.RELATED), Col.WEIGHT
+    ] = Ew.ROOT_RELATED_EDGE_WEIGHT
+    return edge_df
+
+
+def reindex_node_df_for_duplicates(
+    node_df: pd.DataFrame, used_node_ids: set[int]
+) -> pd.DataFrame:
+    positions_to_replace = node_df.index.isin(used_node_ids)
+    if positions_to_replace.any():
+        numeric_index = pd.to_numeric(node_df.index.values, errors="coerce")
+        max_int = numeric_index.max()
+        start_new_index = int(max_int) + 1 if pd.notna(max_int) else 0
+
+        num_replacements = positions_to_replace.sum()
+        new_indices_sequence = range(
+            start_new_index, start_new_index + num_replacements
+        )
+        new_indices_iterator = iter(new_indices_sequence)
+        new_full_index = node_df.index.tolist()
+
+        for i in range(len(new_full_index)):
+            if positions_to_replace[i]:
+                new_full_index[i] = next(new_indices_iterator)
+
+        node_df.index = new_full_index
+
+    return node_df
+
+
+def _form_flat_part_ids(node_df: pd.DataFrame) -> pd.DataFrame:
+    citation_col = node_df[Col.CITATION]
+    citations = sorted(set().union(*citation_col))
+    citation_to_flat_part_id_ser = pd.Series(
+        {
+            citation: flat_part_id  # Start flat_part_id from 1
+            for flat_part_id, citation in enumerate(
+                citations, Dv.START_FLAT_PART_ID
+            )
+        }
+    )
+    node_df[Col.FLAT_PART_ID] = citation_col.apply(
+        lambda _citations: citation_to_flat_part_id_ser.reindex(
+            _citations
+        ).tolist()
+    )
+
+    return node_df
+
+
+def _handle_manual_nodes(node_df: pd.DataFrame) -> pd.DataFrame:
+    inconsistent_nan_mask = (
+        node_df[Col.LVL].isna() != node_df[Col.CLUSTER_ID].isna()
+    )
+
+    if np.any(inconsistent_nan_mask):
+        raise ApplyException(
+            f"Inconsistent NaN values found between '{Col.LVL}'"
+            f" and '{Col.CLUSTER_ID}'. "
+            "Expected them to be either both NaN or both non-NaN."
+        )
+
+    mask = node_df[Col.LVL].isna() & node_df[Col.CLUSTER_ID].isna()
+
+    if not mask.any():
+        return node_df
+
+    if node_df[Col.CLUSTER_ID].notna().any():
+        max_cluster_id = node_df[Col.CLUSTER_ID].max()
+        start_cluster_id = int(max_cluster_id) + 1
+    else:
+        start_cluster_id = Dv.START_CLUSTER_ID
+
+    num_rows_to_update = mask.sum()
+
+    # Generate cluster_ids in groups of 5
+    new_cluster_ids = [
+        start_cluster_id + (i // 5) for i in range(num_rows_to_update)
+    ]
+
+    node_df.loc[mask, Col.LVL] = 1
+    node_df.loc[mask, Col.CLUSTER_ID] = new_cluster_ids
+
+    return node_df
+
+
+def _filter_by_document_id(
     node_df: pd.DataFrame, doc_ids: list[str]
 ) -> pd.DataFrame:
     """
@@ -386,7 +491,7 @@ def filter_by_document_id(
             if idx in rows_to_drop:
                 continue
 
-            facts_list: list[dict[str, str | list[str]]] = row[Col.ANSWER]
+            facts_list: list[dict[str, str | list[str]]] = list(row[Col.ANSWER])
             original_fact_count = len(facts_list)
             filtered_facts: list[dict[str, str | list[str]]] = []
 
@@ -430,7 +535,7 @@ def filter_by_document_id(
 
             if idx not in iteration_drops:
                 if Col.CITATION in row and row[Col.CITATION] is not None:
-                    citation_tuple: tuple[str, ...] = row[Col.CITATION]
+                    citation_tuple: tuple[str, ...] = tuple(row[Col.CITATION])
                     original_citation_count = len(citation_tuple)
 
                     filtered_citations_list = []
@@ -453,4 +558,4 @@ def filter_by_document_id(
         rows_to_drop.update(iteration_drops)
 
     final_df = new_node_df.drop(list(rows_to_drop))
-    return form_flat_part_ids(final_df)
+    return _form_flat_part_ids(final_df)

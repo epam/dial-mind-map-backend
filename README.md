@@ -60,5 +60,5 @@ The **Mind Map Studio** application uses environment variables to configure auth
 | --------------------------- | :------: | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `DIAL_URL`           | Required to set | URL of the core DIAL server                                                       |
 | `RAG_MODEL`              | gpt-4o-2024-05-13 | The deployment model name for the rag part.                                                                            |
-| `GENERATOR_MODEL`              | gpt-4o-2024-08-06 | The deployment model name for the graph generator part                                                                            |
+| `GENERATOR_MODEL`              | gpt-4.1-2025-04-14 | The deployment model name for the graph generator part                                                                            |
 | `DESCRIPTION_INDEX_DEPLOYMENT_NAME`              | gpt-4o-mini-2024-07-18 | The deployment model name to generate descriptions for the images from the sources.                                                                            |

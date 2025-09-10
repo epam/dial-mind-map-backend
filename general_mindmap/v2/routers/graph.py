@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -9,7 +11,7 @@ from general_mindmap.v2.routers.utils.errors import timeout_after
 router = APIRouter()
 
 
-@router.get("/mindmaps/{mindmap:path}/graph")
+@router.get("/v1/graph")
 @timeout_after()
 async def get_graph(request: Request, metainfo: str = "True"):
     metainfo_flag = metainfo.lower() == "true"
@@ -17,7 +19,9 @@ async def get_graph(request: Request, metainfo: str = "True"):
     client = await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     )
 
@@ -26,19 +30,18 @@ async def get_graph(request: Request, metainfo: str = "True"):
     graph = await read_graph(client)
 
     for node in graph["nodes"]:
-        node = node["data"]
+        if "questions" not in node["data"] and "question" in node["data"]:
+            node["data"]["questions"] = [node["data"]["question"]]
 
-        if "question" in node:
-            if "questions" not in node or not node["questions"]:
-                node["questions"] = [node["question"]]
-            del node["question"]
+        if "question" in "node":
+            del node["data"]["question"]
 
     if not metainfo_flag:
         for node in graph["nodes"]:
             node = node["data"]
 
-            if "question" in node:
-                del node["question"]
+            if "questions" in node:
+                del node["questions"]
             if "details" in node:
                 del node["details"]
             if "link" in node:
@@ -47,12 +50,14 @@ async def get_graph(request: Request, metainfo: str = "True"):
     return JSONResponse(content=graph, headers={"ETag": client._etag})
 
 
-@router.post("/mindmaps/{mindmap:path}/subscribe")
-async def subscribe(request: Request, mindmap: str):
+@router.get("/v1/subscribe")
+async def subscribe(request: Request):
     client = await DialClient.create_with_folder(
         DIAL_URL if DIAL_URL else "",
         request.headers.get("authorization", "-"),
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         "",
     )
 

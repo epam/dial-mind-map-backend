@@ -47,3 +47,24 @@ class BatchFileReader:
                 for file in self.files
             ]
             return await asyncio.gather(*tasks)
+
+
+class BatchRawFileReader:
+    files: list[str]
+    client: DialClient
+
+    def __init__(self, client: DialClient):
+        self.files = []
+        self.client = client
+
+    def add_file(self, file: str):
+        self.files.append(file)
+
+    async def read_file(self, file: str):
+        return (file, await self.client.read_raw_file_by_url(file))
+
+    async def read(self):
+        tasks = [
+            asyncio.ensure_future(self.read_file(file)) for file in self.files
+        ]
+        return await asyncio.gather(*tasks)

@@ -19,9 +19,9 @@ def doc_to_attach(document: Document, index=None) -> dict:
     )
 
 
-def graph_to_attach(graph: Graph) -> dict:
+def graph_to_attach(graph: Graph, title: str = "Generated graph node") -> dict:
     return dict(
         type=GRAPH_CONTENT_TYPE,
-        title="Generated graph node",
+        title=title,
         data=graph.model_dump_json(indent=2, exclude_unset=True),
     )

@@ -10,7 +10,6 @@ from langchain_community.vectorstores import FAISS
 from pydantic import BaseModel, ValidationError
 
 from general_mindmap.models.graph import Node
-from general_mindmap.models.request import AddNodeRequest, PatchGraphRequest
 from general_mindmap.utils.docstore import (
     embeddings_model,
     encode_docstore,
@@ -34,12 +33,13 @@ from general_mindmap.v2.routers.utils.errors import (
     timeout_after,
 )
 from general_mindmap.v2.utils.batch_file_reader import BatchFileReader
+from generator.common.structs import AddNodeRequest, PatchGraphRequest
 
 router = APIRouter()
 
 
 # TODO: batch write
-@router.post("/mindmaps/{mindmap:path}/graph/nodes")
+@router.post("/v1/graph/nodes")
 @timeout_after()
 async def add_node(request: Request):
     start_time = str(time())
@@ -59,8 +59,10 @@ async def add_node(request: Request):
 
     async with await DialClient.create_with_folder(
         DIAL_URL or "",
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         assert client._metadata.nodes_file
@@ -126,7 +128,7 @@ async def add_node(request: Request):
         return JSONResponse(content=node, headers={"ETag": etag})
 
 
-@router.put("/mindmaps/{mindmap:path}/graph/nodes/{node_id}")
+@router.put("/v1/graph/nodes/{node_id}")
 @timeout_after()
 async def change_node(request: Request, node_id: str):
     start_time = str(time())
@@ -152,8 +154,10 @@ async def change_node(request: Request, node_id: str):
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         assert client._metadata.nodes_file
@@ -205,7 +209,7 @@ async def change_node(request: Request, node_id: str):
                         type=HistoryItemType.NODES,
                     ),
                     HistoryItem(
-                        old_value="",
+                        old_value=client._metadata.nodes[req.data.id],
                         new_value=node_file,
                         type=HistoryItemType.SINGLE_NODE,
                         id=req.data.id,
@@ -221,7 +225,7 @@ async def change_node(request: Request, node_id: str):
         return JSONResponse(content=node, headers={"ETag": etag})
 
 
-@router.delete("/mindmaps/{mindmap:path}/graph/nodes/{node_id}")
+@router.delete("/v1/graph/nodes/{node_id}")
 @timeout_after()
 async def delete_node(request: Request, node_id: str):
     start_time = str(time())
@@ -229,7 +233,9 @@ async def delete_node(request: Request, node_id: str):
     async with await DialClient.create_with_folder(
         DIAL_URL,
         "auto",
-        request.headers["x-mindmap"],
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         file_reader = BatchFileReader(client)
@@ -319,7 +325,7 @@ def is_same_nodes(a, b) -> bool:
     )
 
 
-@router.patch("/mindmaps/{mindmap:path}/graph")
+@router.patch("/v1/graph")
 @timeout_after()
 async def change_graph(request: Request):
     start_time = str(time())
@@ -333,8 +339,10 @@ async def change_graph(request: Request):
 
     async with await DialClient.create_with_folder(
         DIAL_URL,
-        request.headers["authorization"],
-        request.headers["x-mindmap"],
+        "auto",
+        json.loads(request.headers["x-dial-application-properties"])[
+            "mindmap_folder"
+        ],
         request.headers.get("etag", ""),
     ) as client:
         assert client._metadata.nodes_file
@@ -475,7 +483,7 @@ async def change_graph(request: Request):
                 )
                 client._metadata.nodes_file = nodes_file
 
-        if req.edges:
+        if req.edges or req.edges_to_delete:
             assert client._metadata.edges_file
             current_edges_file, _ = await client.read_file_by_name_and_etag(
                 client._metadata.edges_file
@@ -486,23 +494,31 @@ async def change_graph(request: Request):
                 for edge in current_edges_file["edges"]
             )
 
-            for patch_edge in req.edges:
-                if patch_edge.data.id is None:
-                    patch_edge.data.id = str(uuid4())
+            if req.edges:
+                for patch_edge in req.edges:
+                    if patch_edge.data.id is None:
+                        patch_edge.data.id = str(uuid4())
 
-                edge = edges_map.get(patch_edge.data.id, None)
+                    edge = edges_map.get(patch_edge.data.id, None)
 
-                if edge is None:
-                    edge = {"data": {}}
-                    current_edges_file["edges"].append(edge)
+                    if edge is None:
+                        edge = {"data": {}}
+                        current_edges_file["edges"].append(edge)
 
-                for field, value in patch_edge.data.model_dump(
-                    exclude_unset=True
-                ).items():
-                    if value is None:
-                        del edge["data"][field]
-                    else:
-                        edge["data"][field] = value
+                    for field, value in patch_edge.data.model_dump(
+                        exclude_unset=True
+                    ).items():
+                        if value is None:
+                            del edge["data"][field]
+                        else:
+                            edge["data"][field] = value
+
+            if req.edges_to_delete:
+                current_edges_file["edges"] = [
+                    edge
+                    for edge in current_edges_file["edges"]
+                    if edge["data"]["id"] not in req.edges_to_delete
+                ]
 
             edges_file = f"{start_time}_edges"
             await client.write_file(edges_file, current_edges_file)
@@ -521,6 +537,7 @@ async def change_graph(request: Request):
             HistoryStep(
                 user="USER",
                 changes=changes,
+                skip=req.history_skip,
             ),
         )
 

@@ -34,6 +34,7 @@ def node_to_card_doc(node: Node) -> Document:
             "id": node.id,
             "title": node.label,
             "question": node.question,
+            "questions": node.questions,
             "source": node.link,
         },
     )

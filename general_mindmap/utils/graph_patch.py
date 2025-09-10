@@ -3,11 +3,13 @@ import base64
 from langchain.schema.document import Document
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.runnables import chain
+from langchain_core.runnables import RunnableAssign, RunnableMap, chain
+from pydantic import SecretStr
 
 from dial_rag.embeddings.embeddings import BGE_EMBEDDINGS_MODEL_NAME_OR_PATH
 from general_mindmap.models.attachment import graph_to_attach
 from general_mindmap.models.graph import Edge, Graph, Node
+from general_mindmap.utils.labels import create_label_chain
 
 INSTRUCTION = "Represent this passage for clusterization: "
 
@@ -86,7 +88,7 @@ class GraphPatcher:
         sub_graph = Graph.make_graph([new_node], new_edges)
         return sub_graph
 
-    def create_chain(self):
+    def create_chain(self, dial_url: str, api_key: SecretStr):
         @chain
         def make_graph_attachment(input: dict) -> dict:
             sub_graph = self.make_graph_patch(
@@ -94,4 +96,9 @@ class GraphPatcher:
             )
             return graph_to_attach(sub_graph)
 
-        return make_graph_attachment
+        return (
+            RunnableAssign(
+                RunnableMap(label=create_label_chain(dial_url, api_key))
+            )
+            | make_graph_attachment
+        )

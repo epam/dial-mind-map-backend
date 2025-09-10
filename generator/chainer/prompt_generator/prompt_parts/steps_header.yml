@@ -1,0 +1,29 @@
+default: >
+  # Use the following step-by-step instructions to respond to user input.
+
+multimodal_extraction: >
+  **INSTRUCTIONS:**
+
+cluster_synth: >
+  You will be provided with a list of `Concept` objects. Based on this input,
+  you must perform the following actions:
+
+deduplicator: >
+  You will be provided with a list of `Concept` objects, each with its own `ID`.
+  **Crucially, all concepts in this list are guaranteed to share the identical
+  `name` field.** Based on this input, you must perform the following actions:
+
+root_deduplicator: >
+  You will be provided with a list of `Concept` objects that all share the same
+  name. **Critically, one of these concepts will be explicitly marked as the
+  `[ROOT CONCEPT]`**.
+
+
+  Your task is to use this designated `RootConcept` as the central anchor and
+  perform the following actions:
+
+prettification: >
+  **CRITICAL RULES:**
+
+add_root_deduplicator: >
+  ### Detailed Instructions on Merging Facts

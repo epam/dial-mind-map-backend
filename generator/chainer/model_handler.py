@@ -1,74 +1,103 @@
 import os
+from functools import lru_cache
 from math import ceil
+from typing import Optional
 
 import httpx
+import tiktoken
 from langchain.embeddings import CacheBackedEmbeddings
 from langchain.storage import LocalFileStore
-from langchain_community.callbacks import OpenAICallbackHandler
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from tiktoken import Encoding
 
-import generator.utils.code_analysis as ca
-import generator.utils.constants as const
-from general_mindmap.utils.graph_patch import embeddings_model
-from generator.utils.constants import DocCategories as DocCat
-from generator.utils.constants import Pi
-from generator.utils.misc import env_to_bool
+from generator.common.constants import EnvConsts
+
+from ..adapter import embeddings_model
+from .utils import constants as const
 
 
 class ModelCreator:
-    timeout = httpx.Timeout(150, connect=5.0)
-    rate_limiter = InMemoryRateLimiter()
+    """
+    Single source for creating and retrieving LLM and embedding models.
+    All creation methods are cached to prevent re-instantiating objects.
+    """
+
+    _timeout = httpx.Timeout(150, connect=5.0)
+    _rate_limiter = InMemoryRateLimiter()
+
+    _INNER_EMBEDDING_MODELS = {"text-embedding-3-large": AzureOpenAIEmbeddings}
 
     @classmethod
+    @lru_cache(maxsize=4)
     def get_chat_model(
         cls,
         model_name: str = const.DEFAULT_CHAT_MODEL_NAME,
+        total_timeout: float = 150.0,
+        read_timeout: Optional[float] = None,
+        connect_timeout: float = 5.0,
     ) -> AzureChatOpenAI:
-        seed_str = os.getenv(const.CHAT_MODEL_SEED)
-        seed = int(seed_str) if seed_str is not None else None
+        """
+        Get a cached instance of a chat model.
 
-        return AzureChatOpenAI(
-            azure_deployment=model_name,
-            model=model_name,
-            temperature=0.0,
-            seed=seed,
-            timeout=cls.timeout,
-            rate_limiter=cls.rate_limiter,
+        Args:
+            model_name: The name of the model deployment.
+            total_timeout: The total time for the entire request in
+                seconds.
+            read_timeout: The time to wait between receiving data
+                chunks. Defaults to None (no read timeout).
+            connect_timeout: The time to wait for establishing a
+                connection.
+        """
+        timeout_obj = httpx.Timeout(
+            total_timeout, read=read_timeout, connect=connect_timeout
         )
 
+        model_kwargs = {
+            "azure_deployment": model_name,
+            "model": model_name,
+            "temperature": 0.0,
+            "timeout": timeout_obj,
+            "rate_limiter": cls._rate_limiter,
+        }
+
+        if not "reasoning" in model_name.lower():
+            seed_str = os.getenv(const.CHAT_MODEL_SEED)
+            if seed_str is not None:
+                model_kwargs["seed"] = (
+                    int(seed_str) if seed_str is not None else None
+                )
+
+        if model_name.lower().startswith("gpt-5"):
+            model_kwargs["reasoning_effort"] = "low"
+
+        return AzureChatOpenAI(**model_kwargs)
+
     @classmethod
+    @lru_cache(maxsize=2)
     def get_embedding_model(
         cls,
         model_name: str = const.DEFAULT_EMBEDDING_MODEL_NAME,
     ) -> AzureOpenAIEmbeddings | CacheBackedEmbeddings:
         """
-        Get an embedding model based on the specified model name
-        with optional caching.
-
-        Args:
-            model_name: Name of the embedding model to use.
-                Defaults to the constant DEFAULT_EMBEDDING_MODEL_NAME.
-
-        Returns:
-            The requested embedding model,
-            potentially wrapped with a cache
-            if enabled by environment variable.
-
-        Raises:
-            ValueError: If an unsupported model name is provided.
+        Get a cached embedding model, with optional file-based caching
+        for the embeddings themselves.
         """
-        if model_name == "BAAI/bge-small-en-v1.5":
-            # Model used for graph patching is used for consistency
+        # Handle the globally injected model first.
+        if (
+            model_name == const.DEFAULT_EMBEDDING_MODEL_NAME
+            and embeddings_model is not None
+        ):
             embedding_model = embeddings_model
-        elif model_name == "text-embedding-3-large":
-            embedding_model = AzureOpenAIEmbeddings(
-                deployment=model_name, timeout=cls.timeout
+        elif model_constructor := cls._INNER_EMBEDDING_MODELS.get(model_name):
+            embedding_model = model_constructor(
+                deployment=model_name, timeout=cls._timeout
             )
         else:
             raise ValueError(f"Unsupported embedding model: {model_name}")
-        if env_to_bool(const.IS_EMBED_CACHE):
-            store = LocalFileStore(const.EMBEDDING_CACHE_DIR_PATH)
+
+        if EnvConsts.IS_EMBED_CACHE:
+            store = LocalFileStore(EnvConsts.EMBEDDING_CACHE_DIR_PATH)
             return CacheBackedEmbeddings.from_bytes_store(
                 embedding_model,
                 store,
@@ -78,106 +107,103 @@ class ModelCreator:
         return embedding_model
 
 
-class LLMCostHandler:
-    __repr__ = OpenAICallbackHandler.__repr__
-    cost_types = ca.get_attr_names_from_callable(__repr__)
+class LLMUtils:
+    """
+    A collection of stateless utility functions for working with LLMs.
+    """
 
-    def __init__(self):
-        for cost_type in self.cost_types:
-            setattr(self, cost_type, 0)
+    _MODEL_ENCODING_ALIASES = {
+        "gpt-4.1-2025-04-14": "gpt-4o",
+    }
 
-    def update_costs(self, cb_handler: OpenAICallbackHandler) -> None:
-        for cost_type in self.cost_types:
-            setattr(
-                self,
-                cost_type,
-                (getattr(self, cost_type) + getattr(cb_handler, cost_type)),
-            )
+    IMG_BASE_TOKENS = 85
+    IMG_TOKENS_PER_TILE = 170
+    IMG_TILE_SIZE = 512
+    IMG_REDUCTION_THRESHOLD = 768
+    IMG_MAX_DIMENSION = 2048
 
-
-class ModelUtils:
-    @staticmethod
-    def calculate_img_tokens(
-        width: int,
-        height: int,
-        max_dimension: int = 2048,
-        tile_size: int = 512,
-        base_tokens: int = 85,
-        tokens_per_tile: int = 170,
-        reduction_threshold: int = 768,
-    ) -> int:
+    @classmethod
+    def get_encoding_for_model(cls) -> Encoding:
         """
-        Calculate the number of tokens required for an image
-        based on its dimensions.
-
-        Args:
-            width: The width of the image in pixels.
-            height: The height of the image in pixels.
-            max_dimension: Maximum dimension to scale down to
-                if necessary.
-            tile_size: Size of each tile for token calculation.
-            base_tokens: Base number of tokens added to the total.
-            tokens_per_tile: Number of tokens added per tile.
-            reduction_threshold: Dimension threshold
-                above which the image is scaled down proportionally.
-
-        Returns:
-            The calculated number of tokens.
+        Get the tiktoken encoding for the default chat model.
+        Handles custom model name aliases.
         """
-        # Constrain the maximum dimensions of the image
-        if width > max_dimension or height > max_dimension:
+        encoding_name = cls._MODEL_ENCODING_ALIASES.get(
+            const.DEFAULT_CHAT_MODEL_NAME, const.DEFAULT_CHAT_MODEL_NAME
+        )
+        return tiktoken.encoding_for_model(encoding_name)
+
+    @classmethod
+    def calculate_img_tokens(cls, width: int, height: int) -> int:
+        """
+        Calculate the number of tokens for an image based on its
+        dimensions, following the pricing model for high-detail images.
+        """
+        # 1. Scale down if the image exceeds the max dimension.
+        if width > cls.IMG_MAX_DIMENSION or height > cls.IMG_MAX_DIMENSION:
             aspect_ratio = width / height
             if aspect_ratio > 1:
-                width, height = max_dimension, int(max_dimension / aspect_ratio)
+                width = cls.IMG_MAX_DIMENSION
+                height = int(cls.IMG_MAX_DIMENSION / aspect_ratio)
             else:
-                width, height = int(max_dimension * aspect_ratio), max_dimension
+                width = int(cls.IMG_MAX_DIMENSION * aspect_ratio)
+                height = cls.IMG_MAX_DIMENSION
 
-        # Reduce dimensions proportionally
-        # if either dimension exceeds the reduction threshold
-        if width >= height > reduction_threshold:
-            width, height = (
-                int((reduction_threshold / height) * width),
-                reduction_threshold,
-            )
-        elif height > width > reduction_threshold:
-            width, height = reduction_threshold, int(
-                (reduction_threshold / width) * height
-            )
+        # 2. Scale down to fit within a 768px square if needed.
+        if (
+            width > cls.IMG_REDUCTION_THRESHOLD
+            and height > cls.IMG_REDUCTION_THRESHOLD
+        ):
+            if width > height:
+                scale_factor = cls.IMG_REDUCTION_THRESHOLD / height
+                height = cls.IMG_REDUCTION_THRESHOLD
+                width = int(width * scale_factor)
+            else:
+                scale_factor = cls.IMG_REDUCTION_THRESHOLD / width
+                width = cls.IMG_REDUCTION_THRESHOLD
+                height = int(height * scale_factor)
 
-        tiles = ceil(width / tile_size) * ceil(height / tile_size)
-        return base_tokens + tokens_per_tile * tiles
+        # 3. Calculate tiles and total tokens.
+        tiles = ceil(width / cls.IMG_TILE_SIZE) * ceil(
+            height / cls.IMG_TILE_SIZE
+        )
+        return cls.IMG_BASE_TOKENS + (cls.IMG_TOKENS_PER_TILE * tiles)
 
-    @staticmethod
-    def form_text_inputs(text_contents) -> list:
-        return [{Pi.TEXTUAL_EXTRACTION: content} for content in text_contents]
 
-    @staticmethod
-    def form_multimodal_inputs(file_contents: list[dict], cat: str) -> list:
-        if cat == DocCat.PPTX:
-            page_pref = "Slide"
-        else:
-            page_pref = "Page"
-        multimodal_inputs = []
-        for file_content in file_contents:
-            multimodal_content = []
-            for slide in file_content:
-                slide_text = "\n".join(slide.get("texts"))
-                slide_text_part = {
-                    "type": "text",
-                    "text": f"{page_pref} {slide.get('page_id')}: {slide_text}",
-                }
-                multimodal_content.append(slide_text_part)
-                slide_img_part = [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_data}"
-                        },
-                    }
-                    for image_data in slide.get("images")
-                ]
-                multimodal_content.extend(slide_img_part)
-            multimodal_inputs.append(
-                {Pi.MULTIMODAL_CONTENT: multimodal_content}
-            )
-        return multimodal_inputs
+class Embedder:
+    """
+    Provides a simple, high-level interface for embedding text.
+    """
+
+    @classmethod
+    def embed(cls, inputs: str | list[str]) -> list[float] | list[list[float]]:
+        """
+        Embed text inputs using the configured embedding model.
+
+        Args:
+            inputs: A string or a list of strings to embed.
+
+        Returns:
+            An embedded representation (or a list of them).
+
+        Raises:
+            TypeError: If the input is not a string or a list of
+                strings.
+            ValueError: If the embedding operation fails.
+        """
+        model = ModelCreator.get_embedding_model()
+
+        try:
+            if isinstance(inputs, str):
+                return model.embed_query(inputs)
+            if isinstance(inputs, list):
+                if not inputs:
+                    return []
+                if not all(isinstance(item, str) for item in inputs):
+                    raise TypeError("All items in the list must be strings.")
+                return model.embed_documents(inputs)
+
+            # noinspection PyUnreachableCode
+            raise TypeError("Input must be a string or a list of strings.")
+        except Exception as e:
+            raise ValueError(f"Embedding failed: {e}") from e

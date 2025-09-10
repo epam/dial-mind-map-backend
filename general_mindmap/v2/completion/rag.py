@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from operator import itemgetter
 from typing import Any, AsyncIterator, Dict, List, Sequence, cast
 
@@ -18,9 +17,7 @@ from langchain_core.language_models import ParrotFakeChatModel
 from langchain_core.messages import HumanMessage, merge_content
 from langchain_core.runnables import (
     ConfigurableField,
-    Runnable,
     RunnableAssign,
-    RunnableLambda,
     RunnableMap,
     chain,
 )
@@ -42,6 +39,10 @@ from general_mindmap.models.graph import Graph
 from general_mindmap.utils.cards_retriever import create_cards_retriever
 from general_mindmap.utils.graph_patch import GraphPatcher
 from general_mindmap.utils.labels import create_label_chain
+from general_mindmap.utils.match import (
+    create_matched_node_to_graph_attachment_chain,
+    find_matched_node,
+)
 
 SYSTEM_TEMPLATE = """
 You are chatbot for the Mindmap.
@@ -100,6 +101,7 @@ def format_doc(i: int, doc: Document) -> str:
     return f"<doc {doc_attributes}>\n{doc.page_content}\n</doc>\n"
 
 
+@chain
 def format_docs(docs: Sequence[Document]) -> str:
     formated_docs = "\n".join(format_doc(i, doc) for i, doc in enumerate(docs))
     return f"<mindmap>\n{formated_docs}\n</mindmap>"
@@ -185,11 +187,12 @@ def create_retrieval_chain(docs_retriever, extra_retriever=None):
     )
 
 
+@chain
 async def create_prompt(inputs):
     records = inputs["records"]
     context = inputs["context"]
     question = inputs["question"]
-    mindmap = format_docs(inputs["mindmap"])
+    mindmap = inputs["mindmap"]
 
     prompt_messages = CHAT_PROMPT.invoke({"question": question}).to_messages()
 
@@ -218,29 +221,58 @@ async def create_prompt(inputs):
     return prompt_messages
 
 
-def create_qa_chain(
-    records,
-    dial_url: str,
-    api_key: SecretStr,
-    docs_retriever,
-    extra_retriever=None,
-):
-    qa_chain = create_retrieval_chain(docs_retriever, extra_retriever).assign(
-        answer=RunnableLambda(
-            lambda inputs: {
-                "records": records,
-                "context": inputs["source_documents"],
-                "mindmap": inputs["cards"],
-                "question": inputs["question"],
+def create_qa_chain(dial_url: str, api_key: SecretStr, records):
+    return RunnableAssign(
+        RunnableMap(
+            {
+                "answer": {
+                    "records": lambda _: records,
+                    "context": itemgetter("source_documents"),
+                    "mindmap": itemgetter("cards") | format_docs,
+                    "question": itemgetter("question"),
+                }
+                | create_prompt
+                | create_llm_chain(dial_url, api_key)
+                | StrOutputParser(),
+                "attachment": source_documents_to_attachments,
             }
         )
-        | create_prompt
-        | create_llm_chain(dial_url, api_key)
-        | StrOutputParser(),
-        attachment=source_documents_to_attachments,
     )
 
-    return qa_chain
+
+@chain
+def get_answer_from_node(node: Document) -> str:
+    return node.page_content
+
+
+def create_router_chain(
+    graph_data: Graph,
+    graph_patcher: GraphPatcher,
+    dial_url: str,
+    api_key: SecretStr,
+    records,
+):
+    @chain
+    def router_chain(input: Dict):
+        if input.get("matched_node", None):
+            return RunnableAssign(
+                RunnableMap(
+                    {
+                        "answer": itemgetter("matched_node")
+                        | get_answer_from_node,
+                        "attachment_graph": itemgetter("matched_node")
+                        | create_matched_node_to_graph_attachment_chain(
+                            graph_data
+                        ),
+                    }
+                )
+            )
+        else:
+            return create_qa_chain(dial_url, api_key, records).assign(
+                attachment_graph=graph_patcher.create_chain(dial_url, api_key),
+            )
+
+    return router_chain
 
 
 class Rag:
@@ -265,17 +297,22 @@ class Rag:
             graph_data, nodes_docstore
         )
 
-    def create_chain(self, records, dial_url: str, api_key: SecretStr):
-        qa_chain = create_qa_chain(
-            records,
-            dial_url,
-            api_key,
-            self.docs_retriever,
-            self.cards_retriever,
+    def create_chain(
+        self,
+        records,
+        dial_url: str,
+        api_key: SecretStr,
+        force_answer_generation: bool,
+    ):
+        retrieval_chain = get_last_message | create_retrieval_chain(
+            self.docs_retriever, self.cards_retriever
         )
 
-        rag_chain = get_last_message | qa_chain.assign(
-            label=create_label_chain(dial_url, api_key)
-        ).assign(attachment_graph=self.graph_patcher.create_chain())
+        if not force_answer_generation:
+            retrieval_chain = retrieval_chain.assign(
+                matched_node=find_matched_node
+            )
 
-        return rag_chain
+        return retrieval_chain | create_router_chain(
+            self.graph_data, self.graph_patcher, dial_url, api_key, records
+        )

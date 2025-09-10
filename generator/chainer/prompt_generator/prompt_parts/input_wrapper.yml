@@ -1,0 +1,22 @@
+textual_extraction:
+  separator: "---"
+  main_title: "**INPUTS:**"
+  doc_description_header: "Document Description:"
+  filtering_criteria_header: "Filtering Criteria:"
+  textual_content_header: "Document Content:"
+
+multimodal_extraction:
+  separator: "---"
+  main_title: "**INPUTS:**"
+  doc_description_header: "Document Description:"
+  filtering_criteria_header: "Filtering Criteria:"
+  document_content_header: |
+    Document Content:
+    The document content is provided in the following text and image parts.
+
+prettification:
+  separator: "---"
+  main_title: "**CURRENT TASK:**"
+  styling_instructions_header: "Style Instructions:"
+  num_concepts_header: "Number of Concepts to Process:" # <-- ADDED LINE
+  input_concepts_header: "Input Concepts:"
