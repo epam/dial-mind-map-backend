@@ -35,6 +35,7 @@ Mind Map enables users to access information through an interactive knowledge gr
 </p>
 
 **[Read more about DIAL Mind Map Studio](https://docs.dialx.ai/tutorials/user-guide#mind-maps)**
+
 **[Frontend DIAL Mind Map Studio](https://github.com/epam/dial-mind-map-frontend)**
 
 ---
