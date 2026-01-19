@@ -57,14 +57,7 @@ async def add_node(request: Request):
     if req.data.question is None and req.data.questions:
         req.data.question = req.data.questions[0]
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL or "",
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         assert client._metadata.nodes_file
         current_nodes_file, _ = await client.read_file_by_name_and_etag(
             client._metadata.nodes_file
@@ -152,14 +145,7 @@ async def change_node(request: Request, node_id: str):
     if req.data.question is None and req.data.questions:
         req.data.question = req.data.questions[0]
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         assert client._metadata.nodes_file
         current_nodes_file, _ = await client.read_file_by_name_and_etag(
             client._metadata.nodes_file
@@ -230,14 +216,7 @@ async def change_node(request: Request, node_id: str):
 async def delete_node(request: Request, node_id: str):
     start_time = str(time())
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.nodes_file and client._metadata.edges_file
@@ -337,14 +316,7 @@ async def change_graph(request: Request):
     except ValidationError as e:
         return Response(status_code=400, content=str(e))
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         assert client._metadata.nodes_file
         current_nodes_file, _ = await client.read_file_by_name_and_etag(
             client._metadata.nodes_file

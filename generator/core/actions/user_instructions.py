@@ -5,6 +5,7 @@ from typing import Dict, Set
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from common_utils.logger_config import logger
 from generator.adapter import GMContract as Gmc
 from generator.chainer import ChainCreator as Cc
 from generator.chainer import ChainRunner as Cr
@@ -231,13 +232,13 @@ async def _determine_dominant_language_single_call(
             if lang and isinstance(lang, str):
                 return lang.strip().capitalize()
 
-        logging.warning(
+        logger.warning(
             "LLM did not return a valid DominantLanguageResponse object."
         )
         return "English"
 
     except Exception as e:
-        logging.warning(f"Language detection via single-call LLM failed: {e}")
+        logger.warning(f"Language detection via single-call LLM failed: {e}")
         return "English"
 
 

@@ -2,7 +2,7 @@ import base64
 import io
 import json
 from time import time
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import aiohttp
 from fastapi import HTTPException, Request
@@ -16,6 +16,7 @@ from general_mindmap.utils.graph_patch import embeddings_model, node_to_document
 from general_mindmap.utils.log_config import logger
 from general_mindmap.v2.completion.dial_rag_integration import build_index
 from general_mindmap.v2.models.metadata import Metadata
+from general_mindmap.v2.utils.batch_file_copy import BatchFileCopy
 from general_mindmap.v2.utils.batch_file_deleter import BatchFileDeleter
 
 LOCK_EXPIRATION_SEC = 60
@@ -96,26 +97,61 @@ class DialClient:
     _dial_url: str
     _folder: str
     _raw_folder: str
+    _bucket: str
     _metadata: Metadata
+    _application_properties: Dict[str, str]
 
     _etag: str
     _lock_etag: str | None = None
     _opened: bool = False
     _closed: bool = False
 
+    @staticmethod
+    async def get_bucket(dial_url: str):
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{dial_url}/v1/bucket",
+            ) as response:
+                return await response.json()
+
     @classmethod
-    async def create_with_folder(
-        cls, dial_url: str, api_key: str, folder: str, etag: str
-    ) -> "DialClient":
-        self = cls(dial_url, api_key, etag)
-        self._raw_folder = folder
-        self._folder = f"{self._dial_url}/v1/{folder}"
+    async def create(cls, dial_url: str, request: Request) -> "DialClient":
+        self = cls(
+            dial_url,
+            "auto",
+            request.headers.get("etag", ""),
+            json.loads(request.headers["x-dial-application-properties"]),
+        )
+
+        bucket = await DialClient.get_bucket(dial_url)
+        self._raw_folder = f"files/{bucket['bucket']}/state/"
+        self._folder = f"{self._dial_url}/v1/{self._raw_folder}"
+
         return self
 
-    def __init__(self, dial_url: str, api_key: str, etag: str):
+    @classmethod
+    async def create_without_request(
+        cls, dial_url: str, etag: str, application_properties: Dict[str, str]
+    ) -> "DialClient":
+        self = cls(dial_url, "auto", etag, application_properties)
+
+        bucket = await DialClient.get_bucket(dial_url)
+        self._raw_folder = f"files/{bucket['bucket']}/state/"
+        self._folder = f"{self._dial_url}/v1/{self._raw_folder}"
+
+        return self
+
+    def __init__(
+        self,
+        dial_url: str,
+        api_key: str,
+        etag: str,
+        application_properties: Dict[str, str],
+    ):
         self._dial_url = dial_url
         self._api_key = api_key
         self._etag = etag
+        self._application_properties = application_properties
 
     def create_lock(self, path: str) -> Lock:
         return Lock(self, path)
@@ -144,6 +180,7 @@ class DialClient:
             batch_file_reader = BatchFileReader(self)
             batch_file_writer = BatchFileWriter(self)
 
+            assert self._metadata.documents_file
             batch_file_reader.add_file(self._metadata.documents_file)
 
             file_name_to_id = {}
@@ -266,7 +303,50 @@ class DialClient:
 
         logger.info(f"Migration finished for {self._folder}")
 
-    async def read_metadata(self):
+    async def migrate_to_bucket(self):
+        if "mindmap_folder" not in self._application_properties:
+            return False
+
+        source_folder = self._application_properties["mindmap_folder"]
+
+        files, next_token = await self.get_files_list_by_full_path(
+            source_folder, "limit=1000&recursive=true"
+        )
+
+        while next_token != None:
+            new_files, next_token = await self.get_files_list_by_full_path(
+                source_folder, f"limit=1000&recursive=true&token={next_token}"
+            )
+
+            files += new_files
+
+        metadata_url = None
+        for file in files:
+            if file["name"] == "metadata.json":
+                metadata_url = file["url"]
+
+        batch_file_copy = BatchFileCopy(self)
+
+        for file in files:
+            if file["name"] == "metadata.json":
+                continue
+
+            batch_file_copy.add_copy(
+                file["url"],
+                f"{self._raw_folder}{file['url'][len(source_folder):]}",
+            )
+
+        await batch_file_copy.copy()
+
+        if metadata_url:
+            await self.copy(
+                metadata_url,
+                f"{self._raw_folder}{metadata_url[len(source_folder):]}",
+            )
+
+        return len(files) > 0
+
+    async def read_metadata(self, retry: bool = True):
         try:
             raw_metadata, self._etag = await self.read_file_by_name_and_etag(
                 "metadata", self._etag
@@ -283,8 +363,11 @@ class DialClient:
         except ValidationError:
             self._metadata = Metadata.model_construct()
         except HTTPException as e:
-            if e.status_code == 404:
-                self._metadata = Metadata.model_construct()
+            if e.status_code == 404 and retry:
+                if await self.migrate_to_bucket():
+                    await self.read_metadata(False)
+                else:
+                    self._metadata = Metadata.model_construct()
             else:
                 raise e
 
@@ -397,17 +480,26 @@ class DialClient:
         file_name: str,
         etag: str = "",
         session: aiohttp.ClientSession | None = None,
+        batch: bool = False,
     ) -> Tuple[Any, str]:
         if session is None:
             async with aiohttp.ClientSession() as session:
-                return await self.read_file(file_name, etag, session)
+                return await self.read_file(file_name, etag, session, batch)
         else:
-            return await self.read_file(file_name, etag, session)
+            return await self.read_file(file_name, etag, session, batch)
 
     async def read_file(
-        self, file_name: str, etag: str, session: aiohttp.ClientSession
+        self,
+        file_name: str,
+        etag: str,
+        session: aiohttp.ClientSession,
+        batch: bool = False,
     ) -> Tuple[Any, str]:
-        logger.info(f"Read {file_name}.json")
+        if not batch:
+            logger.info(f"Read {file_name}.json")
+        else:
+            logger.debug(f"Read {file_name}.json")
+
         async with session.get(
             self.make_url(file_name),
             headers={"Authorization": self._api_key, "If-Match": etag},
@@ -422,7 +514,9 @@ class DialClient:
     async def get_files_list(
         self, path: str, params: str | None = None
     ) -> Tuple[List[Any], str | None]:
-        logger.info(f"Get files list {path}")
+        logger.info(
+            f"Get files list {path}",
+        )
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 (
@@ -440,6 +534,48 @@ class DialClient:
                     [item for item in response_json["items"]],
                     response_json.get("nextToken", None),
                 )
+
+    async def get_files_list_by_full_path(
+        self, path: str, params: str | None = None
+    ) -> Tuple[List[Any], str | None]:
+        logger.info(f"Get files list {path}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                (
+                    f"{self._dial_url}/v1/metadata/{path}"
+                    + (f"?{params}" if params else "")
+                ),
+                headers={"api-key": self._api_key},
+            ) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=response.status)
+
+                response_json = await response.json()
+
+                return (
+                    [item for item in response_json["items"]],
+                    response_json.get("nextToken", None),
+                )
+
+    async def copy(self, source: str, destination: str, batch=False):
+        if not batch:
+            logger.info(f"Copy from {source} to {destination}")
+        else:
+            logger.debug(f"Copy from {source} to {destination}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self._dial_url}/v1/ops/resource/copy",
+                json={
+                    "sourceUrl": source,
+                    "destinationUrl": destination,
+                    "overwrite": True,
+                },
+            ) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=response.status)
+
+                return response.status
 
     async def read_file_and_etag(self, file_name: str) -> Tuple[Any, str]:
         async with aiohttp.ClientSession() as session:
@@ -461,8 +597,13 @@ class DialClient:
         content: dict,
         etag: str | None = None,
         session: aiohttp.ClientSession | None = None,
+        batch: bool = False,
     ) -> str:
-        logger.info(f"Write to {file_name}.json")
+        if not batch:
+            logger.info(f"Write to {file_name}.json")
+        else:
+            logger.debug(f"Write to {file_name}.json")
+
         if session is None:
             async with aiohttp.ClientSession() as session:
                 async with session.put(
@@ -504,8 +645,13 @@ class DialClient:
         etag: str | None = None,
         session: aiohttp.ClientSession | None = None,
         content_type: str | None = None,
+        batch: bool = False,
     ) -> str:
-        logger.info(f"Write to {file_name}")
+        if not batch:
+            logger.info(f"Write to {file_name}")
+        else:
+            logger.debug(f"Write to {file_name}")
+
         if session is None:
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()

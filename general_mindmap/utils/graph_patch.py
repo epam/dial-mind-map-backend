@@ -88,17 +88,19 @@ class GraphPatcher:
         sub_graph = Graph.make_graph([new_node], new_edges)
         return sub_graph
 
-    def create_chain(self, dial_url: str, api_key: SecretStr):
+    def create_chain(self, dial_url: str, api_key: SecretStr, rag_model: str):
         @chain
         def make_graph_attachment(input: dict) -> dict:
             sub_graph = self.make_graph_patch(
-                input["label"], input["answer"], input["node_id"]
+                input["label"], input["answer"], input.get("node_id")
             )
             return graph_to_attach(sub_graph)
 
         return (
             RunnableAssign(
-                RunnableMap(label=create_label_chain(dial_url, api_key))
+                RunnableMap(
+                    label=create_label_chain(dial_url, api_key, rag_model)
+                )
             )
             | make_graph_attachment
         )

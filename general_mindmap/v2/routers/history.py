@@ -210,14 +210,7 @@ async def redo(
 async def undo_redo(request: Request, action: str):
     user = "USER"
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         if action == "undo":
             l = r = client._metadata.history.current_step
             while (
@@ -320,14 +313,7 @@ async def undo_redo(request: Request, action: str):
 
 @router.get("/v1/history")
 async def get_history(request: Request):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 

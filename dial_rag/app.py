@@ -73,7 +73,7 @@ QA_CHAIN_CONFIG = QAChainConfig(
     chat_chain_config=ChatChainConfig(
         llm_config=LlmConfig(
             model_deployment_name=os.environ.get(
-                "CHAT_DEPLOYMENT_NAME", "gpt-4o-2024-05-13"
+                "CHAT_DEPLOYMENT_NAME", "gpt-4.1-2025-04-14"
             ),
             max_prompt_tokens=int_env_var(
                 "CHAT_HISTORY_MAX_PROMPTS_TOKENS", 16000
@@ -86,7 +86,7 @@ QA_CHAIN_CONFIG = QAChainConfig(
     query_chain_config=QueryChainConfig(
         llm_config=LlmConfig(
             model_deployment_name=os.environ.get(
-                "QUERY_DEPLOYMENT_NAME", "gpt-4o-2024-05-13"
+                "QUERY_DEPLOYMENT_NAME", "gpt-4.1-2025-04-14"
             ),
             max_prompt_tokens=int_env_var(
                 "QUERY_HISTORY_MAX_PROMPTS_TOKENS", 8000
@@ -122,7 +122,7 @@ USE_DESCRIPTION_INDEX: bool = bool_env_var(
 DESCRIPTION_INDEX_CONFIG = DescriptionIndexConfig(
     llm_config=LlmConfig(
         model_deployment_name=os.environ.get(
-            "DESCRIPTION_INDEX_DEPLOYMENT_NAME", "gpt-4o-mini-2024-07-18"
+            "DESCRIPTION_INDEX_DEPLOYMENT_NAME", "gpt-4.1-mini-2025-04-14"
         ),
         max_retries=int_env_var("DESCRIPTION_INDEX_LLM_MAX_RETRIES", 3),
         max_prompt_tokens=0,  # No limits since history is not used for description generation
@@ -351,7 +351,24 @@ class DialRAGApplication(ChatCompletion):
                 return
 
             # TODO: Add helpers for merging configs from different sources
+            properties = await request.request_dial_application_properties()
+            from general_mindmap.v2.dial.client import DialClient
+
+            client = await DialClient.create_without_request(
+                DIAL_URL or "", request.headers.get("etag", ""), properties
+            )
+
             qa_chain_config = QA_CHAIN_CONFIG.copy(deep=True)
+            qa_chain_config.chat_chain_config.llm_config.model_deployment_name = client._metadata.params.get(
+                "chat_model"
+            ) or os.getenv(
+                "RAG_MODEL", default="gpt-4.1-2025-04-14"
+            )
+            qa_chain_config.query_chain_config.llm_config.model_deployment_name = client._metadata.params.get(
+                "chat_model"
+            ) or os.getenv(
+                "RAG_MODEL", default="gpt-4.1-2025-04-14"
+            )
             if config.debug.model:
                 qa_chain_config.chat_chain_config.llm_config.model_deployment_name = (
                     config.debug.model

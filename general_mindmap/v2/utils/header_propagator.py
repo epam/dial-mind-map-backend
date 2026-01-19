@@ -121,14 +121,8 @@ class HeaderPropagator:
         self, url: str, headers: MutableMapping[str, str]
     ) -> None:
         if url.startswith(self._dial_url):
-            authorization = self._authorization.get()
-            if authorization:
-                headers["authorization"] = authorization
-                if "api-key" in headers:
-                    del headers["api-key"]
-            else:
-                api_key = self._api_key.get()
-                if api_key:
-                    headers["api-key"] = api_key
-                    if "authorization" in headers:
-                        del headers["authorization"]
+            api_key = self._api_key.get()
+            if api_key:
+                headers["api-key"] = api_key
+                if "authorization" in headers:
+                    del headers["authorization"]

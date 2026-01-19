@@ -113,7 +113,7 @@ class LLMUtils:
     """
 
     _MODEL_ENCODING_ALIASES = {
-        "gpt-4.1-2025-04-14": "gpt-4o",
+        "gpt-4.1-2025-04-14": "gpt-4.1-2025-04-14",
     }
 
     IMG_BASE_TOKENS = 85

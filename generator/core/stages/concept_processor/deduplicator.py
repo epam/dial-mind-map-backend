@@ -4,13 +4,13 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.chainer import ChainCreator, ChainRunner
 from generator.chainer.response_formats import RootDeduplicationResult
 from generator.chainer.utils.constants import ChainTypes as Ct
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
 from generator.common.constants import FieldNames as Fn
-from generator.common.logger import logging
 from generator.core.structs import RawMindMapData
 from generator.core.utils.constants import Pi
 
@@ -72,9 +72,7 @@ class ConceptDeduplicator:
             )
 
             if not dup_indices:
-                logging.info(
-                    "Deduplication complete. No more duplicates found."
-                )
+                logger.info("Deduplication complete. No more duplicates found.")
                 break
 
             max_cluster_ids, max_lvls = self._prepare_dedup_inputs(
@@ -180,7 +178,7 @@ class ConceptDeduplicator:
         chain_runner = ChainRunner()
         df_processed = concept_df.copy()
         for i in range(max_tries):
-            logging.info(
+            logger.info(
                 f"--- Starting Deduplication Iteration: {i + 1}/{max_tries} ---"
             )
 
@@ -188,9 +186,7 @@ class ConceptDeduplicator:
             duplicate_names = name_counts[name_counts > 1].index.tolist()
 
             if not duplicate_names:
-                logging.info(
-                    "Success! No duplicate names found. Process finished."
-                )
+                logger.info("Success! No duplicate names found. Process finished.")
                 return RawMindMapData(
                     concept_df=df_processed,
                     relation_df=data.relation_df,
@@ -200,7 +196,7 @@ class ConceptDeduplicator:
                     root_index=data.root_index,
                 )
 
-            logging.warning(
+            logger.warning(
                 f"Found {len(duplicate_names)} groups of duplicates to "
                 f"process: {duplicate_names}"
             )
@@ -211,19 +207,19 @@ class ConceptDeduplicator:
                 duplicate_names=duplicate_names,
                 batch_size=batch_size,
             )
-            logging.info(f"--- Finished Iteration: {i + 1}/{max_tries} ---\n")
+            logger.info(f"--- Finished Iteration: {i + 1}/{max_tries} ---\n")
 
         # Final check after all iterations are complete.
         final_counts = df_processed[Col.NAME].value_counts()
         remaining_duplicates = final_counts[final_counts > 1].index.tolist()
         if remaining_duplicates:
-            logging.error(
+            logger.error(
                 f"Process finished after {max_tries} tries, but "
                 f"{len(remaining_duplicates)} duplicates remain: "
                 f"{remaining_duplicates}"
             )
         else:
-            logging.info(
+            logger.info(
                 "Success! All duplicates resolved within {max_tries} tries."
             )
 
@@ -499,7 +495,7 @@ class ConceptDeduplicator:
             return df_to_process
 
         # Step 2: Dispatch all collected inputs to the ChainRunner.
-        logging.info(
+        logger.info(
             f"Submitting {len(all_chain_inputs)} batches to the "
             "ChainRunner for concurrent processing."
         )
@@ -507,16 +503,14 @@ class ConceptDeduplicator:
         results = await chain_runner.run_chain_on_batch(chain, all_chain_inputs)
 
         # Step 3: Update the DataFrame with the results.
-        logging.info(
-            "All batches processed. Updating DataFrame with new names."
-        )
+        logger.info("All batches processed. Updating DataFrame with new names.")
         for result in results:
             if isinstance(result, Exception):
-                logging.error(f"A batch failed with an exception: {result}")
+                logger.error(f"A batch failed with an exception: {result}")
                 continue
 
             if result is None or not hasattr(result, "renamed_concepts"):
-                logging.warning(
+                logger.warning(
                     f"Skipping a null or malformed batch result: {result}"
                 )
                 continue
@@ -528,9 +522,7 @@ class ConceptDeduplicator:
                 if concept_index is not None and new_name is not None:
                     df_to_process.loc[concept_index, Col.NAME] = new_name
                 else:
-                    logging.warning(
-                        f"Skipping malformed item in result: {item}"
-                    )
+                    logger.warning(f"Skipping malformed item in result: {item}")
 
         return df_to_process
 

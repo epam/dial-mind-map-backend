@@ -57,7 +57,7 @@ RUN python -m nltk.downloader -d /usr/share/nltk_data stopwords punkt punkt_tab 
 
 FROM builder AS builder_download_model
 
-COPY download_model.py .
+COPY scripts/download_model.py .
 
 # Model: https://huggingface.co/epam/bge-small-en
 RUN python download_model.py "epam/bge-small-en" "$BGE_EMBEDDINGS_MODEL_PATH" "openvino" "torch"
@@ -77,6 +77,7 @@ COPY --from=builder --chown=appuser /opt/venv /opt/venv
 COPY --from=builder_download_nltk --chown=appuser /usr/share/nltk_data /usr/share/nltk_data
 COPY --from=builder_download_model --chown=appuser "$BGE_EMBEDDINGS_MODEL_PATH" "$BGE_EMBEDDINGS_MODEL_PATH"
 COPY --from=builder_download_model --chown=appuser "$E5_EMBEDDINGS_MODEL_PATH" "$E5_EMBEDDINGS_MODEL_PATH"
+COPY --chown=appuser ./common_utils /common_utils
 COPY --chown=appuser ./generator /generator
 COPY --chown=appuser ./general_mindmap /general_mindmap
 COPY --chown=appuser ./dial_rag /dial_rag

@@ -35,14 +35,7 @@ router = APIRouter()
 @router.get("/v1/appearances/themes/{theme}")
 @timeout_after()
 async def get_appearances(request: Request, theme: str):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -64,14 +57,7 @@ async def get_appearances(request: Request, theme: str):
 async def change_appearances(request: Request, theme: str):
     start_time = time()
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         appearances = {}
         old_file_name = client._metadata.appearances_file
         if old_file_name:
@@ -113,14 +99,7 @@ async def change_appearances(request: Request, theme: str):
 async def subscribe_to_appearances(request: Request, theme: str):
     start_time = time()
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        "",
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -155,14 +134,7 @@ async def add_file(
     file_name: str,
     file: UploadFile = File(),
 ):
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         await client.write_raw_file(
             f"appearances/themes/{theme}/storage/{file_name}",
             await file.read(),
@@ -177,14 +149,7 @@ async def get_file(
     theme: str,
     file_name: str,
 ):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     return StreamingResponse(
         BytesIO(
@@ -202,14 +167,7 @@ async def get_file(
 async def export(
     request: Request,
 ):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -237,11 +195,17 @@ async def export(
             zipf.writestr("config.json", "{}")
 
         for theme in themes:
-            files = (
-                await client.get_files_list(
-                    f"appearances/themes/{theme['name']}/storage/"
-                )
-            )[0]
+            try:
+                files = (
+                    await client.get_files_list(
+                        f"appearances/themes/{theme['name']}/storage/"
+                    )
+                )[0]
+            except HTTPException as e:
+                if e.status_code == 404:
+                    continue
+                else:
+                    raise e
 
             for file in files:
                 full_url_to_file = f"{DIAL_URL}/v1/{file['url']}"
@@ -270,14 +234,7 @@ async def import_file(
 ):
     current_time = time()
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         zip_buffer = io.BytesIO(await file.read())
 
         file_writer = BatchFileWriter(client)
@@ -285,19 +242,22 @@ async def import_file(
         old_file_name = client._metadata.appearances_file
         new_file_name = ""
         with zipfile.ZipFile(zip_buffer, "r") as zipf:
-            for name in zipf.namelist():
-                if name == "config.json":
-                    new_file_name = client._metadata.appearances_file = (
-                        f"appearances/{current_time}_config"
-                    )
-                    file_writer.add_raw_file(
-                        f"{new_file_name}.json",
-                        zipf.read(name),
-                    )
-                else:
-                    file_writer.add_raw_file(
-                        f"appearances/{name}", zipf.read(name)
-                    )
+            for info in zipf.infolist():
+                if not info.is_dir():
+                    name = info.filename
+
+                    if name == "config.json":
+                        new_file_name = client._metadata.appearances_file = (
+                            f"appearances/{current_time}_config"
+                        )
+                        file_writer.add_raw_file(
+                            f"{new_file_name}.json",
+                            zipf.read(name),
+                        )
+                    else:
+                        file_writer.add_raw_file(
+                            f"appearances/{name}", zipf.read(name)
+                        )
 
         await file_writer.write()
 

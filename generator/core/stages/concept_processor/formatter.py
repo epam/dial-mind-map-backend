@@ -5,11 +5,11 @@ from typing import Any
 import pandas as pd
 from langchain_core.runnables import RunnableSerializable
 
+from common_utils.logger_config import logger
 from generator.chainer import ChainCreator, ChainRunner
 from generator.chainer.utils.constants import ChainTypes as Ct
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
-from generator.common.logger import logging
 from generator.core.utils.constants import FACT, SOURCE_IDS
 from generator.core.utils.constants import FrontEndStatuses as Fes
 from generator.core.utils.constants import Pi
@@ -71,7 +71,7 @@ class ConceptFormatter:
         concept_df = data.concept_df
         flat_part_df = data.flat_part_df
 
-        logging.info("Creating final concept DataFrame")
+        logger.info("Creating final concept DataFrame")
         active_mask = concept_df[Col.IS_ACTIVE_CONCEPT] == ColVals.TRUE_INT
         concept_df = concept_df.loc[active_mask].copy()
         concept_df = await self._augment_and_prettify(concept_df, flat_part_df)
@@ -105,14 +105,14 @@ class ConceptFormatter:
         """
         modified_rows = concept_df[concept_df.get(Col.MODIFIED) == 1]
         if modified_rows.empty:
-            logging.info("No modified answers to prettify.")
+            logger.info("No modified answers to prettify.")
             return concept_df
 
         concepts_to_prettify = modified_rows.apply(
             self._repr_question_w_answer, axis=1
         ).tolist()
         batched_concepts = utils.split_list_into_batches(concepts_to_prettify)
-        logging.info(f"Prettifying {len(modified_rows)} modified concepts.")
+        logger.info(f"Prettifying {len(modified_rows)} modified concepts.")
 
         chain = self.chain_creator.choose_chain(Ct.APPLY_CONCEPT_PRETTIFIER)
         pretty_concepts = await self.prettify_concepts_with_retry(
@@ -180,7 +180,7 @@ class ConceptFormatter:
             self._repr_question_w_answer, axis=1
         ).tolist()
         batched_concepts = utils.split_list_into_batches(concepts_to_prettify)
-        logging.info("Concept Prettification")
+        logger.info("Concept Prettification")
         chain = self.chain_creator.choose_chain(Ct.CONCEPT_PRETTIFIER)
         pretty_concepts = await self.prettify_concepts_with_retry(
             batched_concepts, chain
@@ -228,7 +228,7 @@ class ConceptFormatter:
         ):
             return processed
 
-        logging.warning(f"Was not able to prettify node: {concept.get('name')}")
+        logger.warning(f"Was not able to prettify node: {concept.get('name')}")
         return [concept]  # Return original dict on failure
 
     async def _put_prettification_status(
@@ -289,9 +289,7 @@ class ConceptFormatter:
         if len(processed_concepts) == len(concept_batch):
             return processed_concepts
 
-        logging.warning(
-            f"Batch of size {len(concept_batch)} failed, splitting."
-        )
+        logger.warning(f"Batch of size {len(concept_batch)} failed, splitting.")
         mid = len(concept_batch) // 2
         first_half_task = self._recursive_process_batch(
             concept_batch[:mid], chain
@@ -350,7 +348,7 @@ class ConceptFormatter:
                     else:
                         chunk_ids.add(id_value)
                 except KeyError:
-                    logging.warning(f"Invalid citation ID {source_id} found.")
+                    logger.warning(f"Invalid citation ID {source_id} found.")
 
             new_annotated_answer.append(
                 {FACT: text, SOURCE_IDS: sorted(list(chunk_ids))}

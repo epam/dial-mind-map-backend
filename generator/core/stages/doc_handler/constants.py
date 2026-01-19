@@ -33,3 +33,5 @@ class DocContentType:
 DEFAULT_DOC_DESC = ""
 
 HEADER_TO_SPLIT_ON = "Header 1"
+
+MAX_CHUNK_SIZE = 2048

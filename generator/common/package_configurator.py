@@ -4,7 +4,6 @@ from langchain_core.globals import set_debug, set_llm_cache, set_verbose
 
 from ..cache_handler.db import TimestampedSQLiteCache
 from .constants import EnvConsts as Env
-from .logger import setup_logging
 
 
 class PackageConfigurator:
@@ -52,11 +51,6 @@ class PackageConfigurator:
         # process.
         if not cls.configured:
             # --- Optional Feature Initialization ---
-
-            # Set up structured logging if enabled via environment
-            # variable.
-            if Env.IS_LOG:
-                setup_logging()
 
             # Configure LLM response caching if enabled.
             if Env.IS_LLM_CACHE:

@@ -108,28 +108,24 @@ def calculate_features(question: str, best_triggers: List[Dict]) -> List[float]:
 
 
 async def find_matched_node(input: Dict) -> Optional[Document]:
-    question = input["question"]
+    question = input.get("original_question", input["question"])
     nodes: Sequence[Document] = input["cards"]
 
     if not len(nodes):
         return None
 
-    for node in nodes:
-        if node.metadata["question"] == question:
-            return node
+    question_embedding = calculate_embedding(question)
 
-    # question_embedding = calculate_embedding(question)
+    best_triggers = get_sorted_best_triggers_for_each_node(
+        question_embedding, nodes
+    )
 
-    # best_triggers = get_sorted_best_triggers_for_each_node(
-    #     question_embedding, nodes
-    # )
+    features = calculate_features(question, best_triggers)
 
-    # features = calculate_features(question, best_triggers)
-
-    # if match_model.predict([features])[0] == 1:
-    #     return best_triggers[0]["node"]
-    # else:
-    #     return None
+    if match_model.predict([features])[0] == 1:
+        return best_triggers[0]["node"]
+    else:
+        return None
 
 
 def create_matched_node_to_graph_attachment_chain(graph_data: Graph):

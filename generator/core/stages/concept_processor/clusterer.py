@@ -6,13 +6,13 @@ import pandas as pd
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering, KMeans
 
+from common_utils.logger_config import logger
 from generator.chainer import ChainCreator, ChainRunner
 from generator.chainer.utils.constants import ChainTypes as Ct
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
 from generator.common.constants import EnvConsts
 from generator.common.constants import FieldNames as Fn
-from generator.common.logger import logging
 from generator.core.structs import RawMindMapData
 from generator.core.utils.constants import ClusteringMethods as Cm
 from generator.core.utils.constants import FrontEndStatuses as Fes
@@ -72,7 +72,7 @@ class ConceptClusterer:
                 flat_part_df=data.flat_part_df,
             )
 
-        logging.info("Creating concept cluster hierarchy.")
+        logger.info("Creating concept cluster hierarchy.")
         max_cluster_size = self._det_max_cluster_size(chunk_df)
 
         concept_df, relation_df, root_df = (
@@ -81,7 +81,7 @@ class ConceptClusterer:
             )
         )
 
-        logging.info(f"Created hierarchy with {len(concept_df)} concepts...")
+        logger.info(f"Created hierarchy with {len(concept_df)} concepts...")
         return RawMindMapData(
             concept_df=concept_df,
             relation_df=relation_df,
@@ -123,7 +123,7 @@ class ConceptClusterer:
 
         while True:
             if len(lvl_qapair_df) < 4:
-                logging.info(
+                logger.info(
                     f"Stopping hierarchy creation: only {len(lvl_qapair_df)} "
                     "concepts remain, which will form the root level."
                 )
@@ -134,7 +134,7 @@ class ConceptClusterer:
             embedding_matrix = np.stack(lvl_qapair_df[Col.EMBEDDING])
             lvl_qapair_indices = lvl_qapair_df.index.to_numpy()
 
-            logging.info(f"Creating clusters for Level {int(lvl)}")
+            logger.info(f"Creating clusters for Level {int(lvl)}")
             lvl_mult, clusters = self._create_lvl_clusters(
                 embedding_matrix, lvl_qapair_indices, max_chunk_size
             )
@@ -149,7 +149,7 @@ class ConceptClusterer:
                 qapair_to_cluster
             )
 
-            logging.info(f"Synthesizing clusters for Level {int(lvl)}")
+            logger.info(f"Synthesizing clusters for Level {int(lvl)}")
             synthesized_clusters = await self._synth_clusters(
                 lvl_qapair_df, clusters, int(lvl)
             )
@@ -166,7 +166,7 @@ class ConceptClusterer:
                 concept_df.index.max(),
             )
 
-            logging.info(f"Hierarchy level {int(lvl)} created.")
+            logger.info(f"Hierarchy level {int(lvl)} created.")
 
             # Accumulate the processed concepts from the current level.
             if lvl > 1:
@@ -574,7 +574,7 @@ class ConceptClusterer:
                     }
                 )
             except KeyError as e:
-                logging.warning(f"Skipping relation due to missing key: {e}")
+                logger.warning(f"Skipping relation due to missing key: {e}")
 
         # Update the main relations DataFrame with the new ones.
         new_rel_df = pd.DataFrame(new_rels)
@@ -608,7 +608,7 @@ class ConceptClusterer:
             level: The current hierarchical level being processed.
         """
         cluster_text = "cluster" if completed == 1 else "clusters"
-        logging.info(
+        logger.info(
             f"Level {level}: {completed} {cluster_text} out of {total} processed"
         )
 
@@ -691,7 +691,7 @@ class AddConceptClusterer(ConceptClusterer):
 
         num_new_concepts = pd.Series(concept_df["new"] == 1).sum()
         if num_new_concepts < 4:
-            logging.info(
+            logger.info(
                 "Skipping hierarchy creation for small number of new concepts "
                 f"({num_new_concepts})"
             )
@@ -769,7 +769,7 @@ class AddConceptClusterer(ConceptClusterer):
             )
 
             if len(current_processing_df) < 4:
-                logging.info(
+                logger.info(
                     f"Stopping hierarchy rebuild at level {lvl}: only "
                     f"{len(current_processing_df)} concepts to process. "
                     "They will form the new root level."
@@ -786,7 +786,7 @@ class AddConceptClusterer(ConceptClusterer):
             embedding_matrix = np.stack(current_processing_df[Col.EMBEDDING])
             indices_arr = current_processing_df.index.to_numpy()
 
-            logging.info(f"Re-clustering concepts for Level {lvl}")
+            logger.info(f"Re-clustering concepts for Level {lvl}")
             _, clusters = self._create_lvl_clusters(
                 embedding_matrix, indices_arr, max(max_cluster_size, 10)
             )

@@ -1,7 +1,6 @@
-import logging
-
 from pydantic import ConfigDict, Field, ValidationError
 
+from common_utils.logger_config import logger
 from generator.common import structs
 from generator.common.interfaces import EmbeddingModel
 
@@ -157,5 +156,5 @@ class GeneralMindmapAdapter(AbstractAdapter):
             # correct because `_GMGraphFiles` is a subclass of it.
             return parsed_object
         except ValidationError as e:
-            logging.error(f"GM Adapter validation failed: {e}")
+            logger.error(f"GM Adapter validation failed: {e}")
             raise

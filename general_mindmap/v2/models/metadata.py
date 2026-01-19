@@ -81,7 +81,7 @@ class History(ExtraForbidModel):
         self.current_step = len(self.steps) - 1
 
     def cut_steps(self, left: int, right: int) -> List[HistoryStep]:
-        to_delete = self.steps[: max(0, left - 1)] + self.steps[right:]
+        to_delete = self.steps[: max(0, left)] + self.steps[right:]
         self.steps = self.steps[left:right]
         return to_delete
 
@@ -122,7 +122,7 @@ class Metadata(ExtraForbidModel):
     to_delete: List[File] = []
     last_doc_id: int = 1
     appearances_file: str = ""
-    params: dict[str, str] = {}
+    params: dict[str, str | bool] = {}
 
     def append_to_delete(self, file_name: str):
         if any(file.file == file_name for file in self.to_delete):

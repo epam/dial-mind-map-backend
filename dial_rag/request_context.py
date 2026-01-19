@@ -1,6 +1,5 @@
 from contextlib import contextmanager
-from pydantic import BaseModel
-from langchain_core.pydantic_v1 import SecretStr
+from pydantic import BaseModel, SecretStr
 from aidial_sdk.chat_completion import Request, Response, Choice
 
 from dial_rag.dial_config import DialConfig
@@ -12,6 +11,10 @@ from dial_rag.dial_user_limits import get_user_limits_for_model
 class RequestContext(BaseModel):
     dial_url: str
     api_key: str  # Do not use SecretStr here to avoid mixing pydantic versions
+    chat_guardrails_enabled: bool
+    chat_prompt: str
+    chat_guardrails_prompt: str
+    chat_guardrails_response_prompt: str
     choice: Choice | None  # TODO
     dial_limited_resources: DialLimitedResources
 

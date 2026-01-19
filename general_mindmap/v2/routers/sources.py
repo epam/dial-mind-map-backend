@@ -1,6 +1,7 @@
+import asyncio
 import base64
 import io
-import json
+import urllib.parse
 import zipfile
 from io import BytesIO
 from time import time
@@ -9,7 +10,6 @@ from typing import Any, Dict
 import tiktoken
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     File,
     Form,
     HTTPException,
@@ -28,6 +28,7 @@ from general_mindmap.pptx.converter import (
     convert_pdf_to_images,
     convert_pptx_to_images,
 )
+from general_mindmap.utils.streaming import stream_and_wait
 from general_mindmap.v2.completion.dial_rag_integration import build_index
 from general_mindmap.v2.config import DIAL_URL
 from general_mindmap.v2.dial.client import DialClient, Lock
@@ -55,6 +56,7 @@ CONTENT_TYPE_TO_EXTENSION = {
     PDF_CONTENT_TYPE: "pdf",
     PPTX_CONTENT_TYPE: "pptx",
     "text/html": "html",
+    "text/plain": "txt",
 }
 
 router = APIRouter()
@@ -113,7 +115,10 @@ async def migrate_sources_from_old_format(
                 **SERIALIZATION_CONFIG,
             )
 
-            encoding = tiktoken.encoding_for_model("gpt-4o")
+            encoding = tiktoken.encoding_for_model(
+                client._metadata.params.get("chat_model")
+                or "gpt-4.1-2025-04-14"
+            )
             tokens = 0
             for chunk in record.chunks:
                 tokens += len(encoding.encode(chunk.text))
@@ -140,14 +145,7 @@ async def migrate_sources_from_old_format(
 @router.get("/v1/sources")
 @timeout_after()
 async def get_sources(request: Request):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -160,6 +158,7 @@ async def get_sources(request: Request):
             },
             headers={"ETag": client._etag},
         )
+    assert client._metadata.documents_file
 
     docs, _ = await client.read_file_by_name_and_etag(
         client._metadata.documents_file
@@ -240,7 +239,10 @@ async def add_file_source_background(
         )
 
         if record:
-            encoding = tiktoken.encoding_for_model("gpt-4o")
+            encoding = tiktoken.encoding_for_model(
+                client._metadata.params.get("chat_model")
+                or "gpt-4.1-2025-04-14"
+            )
             tokens = 0
             for chunk in record.chunks:
                 tokens += len(encoding.encode(chunk.text))
@@ -258,6 +260,7 @@ async def add_file_source_background(
             Document(
                 id="TEMP",
                 url=f"{client._folder}{new_document['url']}",
+                name=new_document["name"],
                 type="FILE",
                 content_type=new_document["content_type"],
             )
@@ -318,7 +321,10 @@ async def add_link_source_background(
         )
 
         if record:
-            encoding = tiktoken.encoding_for_model("gpt-4o")
+            encoding = tiktoken.encoding_for_model(
+                client._metadata.params.get("chat_model")
+                or "gpt-4.1-2025-04-14"
+            )
             tokens = 0
             for chunk in record.chunks:
                 tokens += len(encoding.encode(chunk.text))
@@ -335,8 +341,9 @@ async def add_link_source_background(
         [
             Document(
                 id="TEMP",
-                url=f"{client._folder}{new_document['copy_url']}",
-                type="FILE",
+                url=new_document["name"],
+                name=new_document["name"],
+                type="LINK",
                 content_type="text/html",
             )
         ],
@@ -380,16 +387,12 @@ async def add_link_source_background(
 
 @router.post("/v1/sources/{source_id}/versions/{version_id}/events")
 async def source_status(request: Request, source_id: str, version_id: int):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        "",
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
+
+    if client._metadata.documents_file is None:
+        raise HTTPException(404, "Not found")
 
     docs, _ = await client.read_file_by_name_and_etag(
         client._metadata.documents_file
@@ -425,7 +428,6 @@ async def source_status(request: Request, source_id: str, version_id: int):
 @timeout_after()
 async def add_source(
     request: Request,
-    background_tasks: BackgroundTasks,
     file: UploadFile | None = File(None),
     link: str = Form(None),
     name: str = Form(""),
@@ -435,14 +437,7 @@ async def add_source(
     if file and link:
         raise HTTPException(400, "Only file or link should be specified")
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
     await client.open()
 
     id = str(client._metadata.last_doc_id)
@@ -462,9 +457,13 @@ async def add_source(
         "active": True,
     }
 
+    processing_file_task = None
     try:
         last_docs_file = ""
-        if "documents_file" not in client._metadata.model_fields_set:
+        if (
+            "documents_file" not in client._metadata.model_fields_set
+            or not client._metadata.documents_file
+        ):
             client._metadata.last_change = str(start_time)
             client._metadata.version = 3
 
@@ -485,7 +484,7 @@ async def add_source(
         docs["documents"].append(new_document)
 
         if file:
-            new_document["name"] = file.filename
+            new_document["name"] = urllib.parse.unquote(file.filename or "")
             new_document["type"] = "FILE"
             new_document["content_type"] = file.content_type
 
@@ -555,20 +554,20 @@ async def add_source(
         if new_document["status"] == "IN_PROGRESS":
             if file:
                 assert file_data
-                background_tasks.add_task(
-                    add_file_source_background,
-                    client,
-                    new_document,
-                    file_data,
-                    file.content_type,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_file_source_background(
+                        client,
+                        new_document,
+                        file_data,
+                        file.content_type,
+                        source_lock,
+                    )
                 )
             else:
-                background_tasks.add_task(
-                    add_link_source_background,
-                    client,
-                    new_document,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_link_source_background(
+                        client, new_document, source_lock
+                    )
                 )
         else:
             await source_lock.release()
@@ -578,23 +577,31 @@ async def add_source(
 
         raise e
 
-    etag = await client.close()
+    _ = await client.close()
 
-    return JSONResponse(content=new_document, headers={"ETag": etag})
+    return StreamingResponse(
+        stream_and_wait(
+            client.subscribe_to_source(
+                request,
+                (await client.read_file_and_etag(new_document["storage_url"]))[
+                    0
+                ],
+                new_document["storage_url"],
+            ),
+            processing_file_task,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/v1/sources/{source_id}/versions/{version_id}/file")
 async def download_source(request: Request, source_id: str, version_id: int):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
+
+    if client._metadata.documents_file is None:
+        raise HTTPException(404, "Not found")
 
     docs, _ = await client.read_file_by_name_and_etag(
         client._metadata.documents_file
@@ -654,14 +661,12 @@ def filter_sources(sources: Any) -> Any:
 async def delete_source(request: Request, source_id: str):
     start_time = str(time())
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
+    async with await DialClient.create(
+        DIAL_URL, request
     ) as client, client.create_lock(f"sources/{source_id}"):
+        if client._metadata.documents_file is None:
+            raise HTTPException(404, "Not found")
+
         docs, _ = await client.read_file_by_name_and_etag(
             client._metadata.documents_file
         )
@@ -823,7 +828,6 @@ async def delete_source(request: Request, source_id: str):
 @timeout_after()
 async def add_version(
     request: Request,
-    background_tasks: BackgroundTasks,
     source_id: str,
     file: UploadFile | None = File(None),
     link: str = Form(None),
@@ -833,15 +837,12 @@ async def add_version(
     if file and link:
         raise HTTPException(400, "Only file or link should be specified")
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
     await client.open()
+
+    if client._metadata.documents_file is None:
+        raise HTTPException(404, "Not found")
+
     source_lock = client.create_lock(f"sources/{source_id}")
     try:
         await source_lock.acquire()
@@ -854,6 +855,7 @@ async def add_version(
     )
     assert history_step.changes is not None
 
+    processing_file_task = None
     try:
         last_docs_file = client._metadata.documents_file
         docs, docs_etag = await client.read_file_by_name_and_etag(
@@ -921,7 +923,7 @@ async def add_version(
         docs["documents"].append(new_document)
 
         if file:
-            new_document["name"] = file.filename
+            new_document["name"] = urllib.parse.unquote(file.filename or "")
             new_document["type"] = "FILE"
             new_document["content_type"] = file.content_type
 
@@ -979,20 +981,20 @@ async def add_version(
         if new_document["status"] == "IN_PROGRESS":
             if file:
                 assert file_data
-                background_tasks.add_task(
-                    add_file_source_background,
-                    client,
-                    new_document,
-                    file_data,
-                    file.content_type,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_file_source_background(
+                        client,
+                        new_document,
+                        file_data,
+                        file.content_type,
+                        source_lock,
+                    )
                 )
             else:
-                background_tasks.add_task(
-                    add_link_source_background,
-                    client,
-                    new_document,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_link_source_background(
+                        client, new_document, source_lock
+                    )
                 )
         else:
             await source_lock.release()
@@ -1002,16 +1004,27 @@ async def add_version(
 
         raise e
 
-    etag = await client.close()
+    _ = await client.close()
 
-    return JSONResponse(content=new_document, headers={"ETag": etag})
+    return StreamingResponse(
+        stream_and_wait(
+            client.subscribe_to_source(
+                request,
+                (await client.read_file_and_etag(new_document["storage_url"]))[
+                    0
+                ],
+                new_document["storage_url"],
+            ),
+            processing_file_task,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/v1/sources/{source_id}/versions/{version}")
 @timeout_after()
 async def try_process_again(
     request: Request,
-    background_tasks: BackgroundTasks,
     source_id: str,
     version: int,
     file: UploadFile | None = File(None),
@@ -1022,21 +1035,19 @@ async def try_process_again(
     if file and link:
         raise HTTPException(400, "Only file or link should be specified")
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
     await client.open()
+
+    if not client._metadata.documents_file:
+        raise HTTPException(404, "Not found")
+
     source_lock = client.create_lock(f"sources/{source_id}")
     try:
         await source_lock.acquire()
     except Exception:
         await client.release_lock()
 
+    processing_file_task = None
     try:
         docs, _ = await client.read_file_by_name_and_etag(
             client._metadata.documents_file
@@ -1067,7 +1078,7 @@ async def try_process_again(
         new_document["status_description"] = None
 
         if file:
-            new_document["name"] = file.filename
+            new_document["name"] = urllib.parse.unquote(file.filename or "")
             new_document["type"] = "FILE"
             new_document["content_type"] = file.content_type
 
@@ -1108,20 +1119,20 @@ async def try_process_again(
         if new_document["status"] == "IN_PROGRESS":
             if file:
                 assert file_data
-                background_tasks.add_task(
-                    add_file_source_background,
-                    client,
-                    new_document,
-                    file_data,
-                    file.content_type,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_file_source_background(
+                        client,
+                        new_document,
+                        file_data,
+                        file.content_type,
+                        source_lock,
+                    )
                 )
             else:
-                background_tasks.add_task(
-                    add_link_source_background,
-                    client,
-                    new_document,
-                    source_lock,
+                processing_file_task = asyncio.create_task(
+                    add_link_source_background(
+                        client, new_document, source_lock
+                    )
                 )
         else:
             await source_lock.release()
@@ -1131,9 +1142,21 @@ async def try_process_again(
 
         raise e
 
-    etag = await client.close()
+    _ = await client.close()
 
-    return JSONResponse(content=new_document, headers={"ETag": etag})
+    return StreamingResponse(
+        stream_and_wait(
+            client.subscribe_to_source(
+                request,
+                (await client.read_file_and_etag(new_document["storage_url"]))[
+                    0
+                ],
+                new_document["storage_url"],
+            ),
+            processing_file_task,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post("/v1/sources/{source_id}/versions/{version}/active")
@@ -1150,15 +1173,12 @@ async def change_active_version(
     if file and link:
         raise HTTPException(400, "Only file or link should be specified")
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
     await client.open()
+
+    if client._metadata.documents_file is None:
+        raise HTTPException(404, "Not found")
+
     source_lock = client.create_lock(f"sources/{source_id}")
     try:
         await source_lock.acquire()
@@ -1241,13 +1261,8 @@ async def change_name(
     request: Request,
     source_id: str,
 ):
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
+    async with await DialClient.create(
+        DIAL_URL, request
     ) as client, client.create_lock(f"sources/{source_id}"):
         old_name = client._metadata.source_names.get(source_id, "")
         new_name = (await request.json())["name"] or ""
@@ -1273,16 +1288,8 @@ async def change_name(
 
 
 @router.get("/v1/sources/export")
-@timeout_after()
 async def export(request: Request):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -1290,12 +1297,12 @@ async def export(request: Request):
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         files, next_token = await client.get_files_list(
-            "/", "limit=1000&recursive=true"
+            "", "limit=1000&recursive=true"
         )
 
         while next_token != None:
             new_files, next_token = await client.get_files_list(
-                "/", f"limit=1000&recursive=true&token={next_token}"
+                "", f"limit=1000&recursive=true&token={next_token}"
             )
 
             files += new_files
@@ -1323,19 +1330,13 @@ async def export(request: Request):
 
 
 @router.post("/v1/import")
-@timeout_after()
+# TODO: Don't have good solution to handle a long import
+# @timeout_after()
 async def import_file(
     request: Request,
     file: UploadFile,
 ):
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         zip_buffer = io.BytesIO(await file.read())
 
         file_writer = BatchFileWriter(client)
@@ -1350,3 +1351,46 @@ async def import_file(
         await file_writer.write()
 
         return Response()
+
+
+@router.get("/v1/sources/{source_id}/versions/{version_id}/pages/{page_id}")
+async def download_page(
+    request: Request, source_id: str, version_id: int, page_id: int
+):
+    client = await DialClient.create(DIAL_URL, request)
+
+    await client.read_metadata()
+
+    assert client._metadata.documents_file
+    docs, _ = await client.read_file_by_name_and_etag(
+        client._metadata.documents_file
+    )
+
+    sources = docs["documents"]
+
+    source = next(
+        (
+            source
+            for source in sources
+            if source["id"] == source_id
+            and source.get("version", 1) == version_id
+        ),
+        None,
+    )
+
+    if source is None:
+        raise HTTPException(404, "Not found")
+
+    if "storage_url" in source:
+        source, _ = await client.read_file_by_name_and_etag(
+            source["storage_url"]
+        )
+
+    return StreamingResponse(
+        BytesIO(
+            await client.read_raw_file_by_url(
+                client.make_url_without_extension(source["pages"][page_id - 1])
+            )
+        ),
+        media_type="image/jpeg",
+    )

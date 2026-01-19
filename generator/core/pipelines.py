@@ -1,11 +1,11 @@
 import asyncio
-import logging
 from typing import AsyncGenerator, Optional, Union
 from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.adapter import GMContract as Gmc
 from generator.chainer import ChainCreator
 from generator.common import type_vars as tv
@@ -114,7 +114,7 @@ class PipelineHandler:
          3. Concept composing
          4. Edge processing
         """
-        logging.info("'Generate' pipeline: Start")
+        logger.info("'Generate' pipeline: Start")
         tasks: list[asyncio.Task] = []
         if request is None:
             request = self.request
@@ -202,7 +202,7 @@ class PipelineHandler:
             yield MindMapData(node_df=node_df, edge_df=edge_df, root_id=root_id)
 
         except EmptyDataException as e:
-            logging.warning(
+            logger.warning(
                 f"Pipeline resulted in empty data: {e}. Returning empty graph."
             )
             yield MindMapData(
@@ -210,7 +210,7 @@ class PipelineHandler:
             )
         finally:
             cancel_tasks(tasks)
-            logging.info("'Generate' pipeline: End")
+            logger.info("'Generate' pipeline: End")
 
     async def delete(
         self,
@@ -222,7 +222,7 @@ class PipelineHandler:
         Runs the 'delete' pipeline to remove information from the mind
         map.
         """
-        logging.info("'Delete' pipeline: Start")
+        logger.info("'Delete' pipeline: Start")
         tasks: list[asyncio.Task] = []
         try:
             node_df, edge_df = filter_graph_by_docs(
@@ -278,7 +278,7 @@ class PipelineHandler:
             yield MindMapData(node_df=node_df, edge_df=edge_df, root_id=root_id)
         finally:
             cancel_tasks(tasks)
-            logging.info("'Delete' pipeline: End")
+            logger.info("'Delete' pipeline: End")
 
     async def _rebuild_graph_after_root_deletion(
         self,
@@ -328,7 +328,7 @@ class PipelineHandler:
         graph_data: MindMapData,
     ) -> AsyncGenerator[Union[StatusChunk, MindMapData], None]:
         """Runs the 'add' pipeline to integrate new documents."""
-        logging.info("'Add' pipeline: Start")
+        logger.info("'Add' pipeline: Start")
         tasks: list[asyncio.Task] = []
         try:
             node_df, edge_df = graph_data.node_df, graph_data.edge_df
@@ -433,14 +433,14 @@ class PipelineHandler:
             yield MindMapData(node_df=node_df, edge_df=edge_df, root_id=root_id)
 
         except EmptyDataException:
-            logging.warning(
+            logger.warning(
                 "Add pipeline resulted in no new elements; returning original "
                 "graph data."
             )
             yield graph_data
         finally:
             cancel_tasks(tasks)
-            logging.info("'Add' pipeline: End")
+            logger.info("'Add' pipeline: End")
 
     @staticmethod
     async def process_results(
@@ -450,7 +450,7 @@ class PipelineHandler:
         Processes the final MindMapData object and yields structured
         node/edge data.
         """
-        logging.info("Processing Mind Map Results: Start")
+        logger.info("Processing Mind Map Results: Start")
 
         node_ids = set()
         if mind_map_data.problematic_nodes:
@@ -475,7 +475,7 @@ class PipelineHandler:
         ):
             yield edge
 
-        logging.info("Processing Mind Map Results: End")
+        logger.info("Processing Mind Map Results: End")
 
     @staticmethod
     async def _yield_problematic_nodes(

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "general-mindmap"
-version = "0.11.6"
+version = "0.12.8"
 description = "The project is a backend part of the DIAL Mind Map Studio"
 authors = ["Uladzislau Vishneuski <Uladzislau_Vishneuski@epam.com>", "Viachaslau Shpak <Viachaslau_Shpak@epam.com>"]
 homepage = "https://dialx.ai/"
@@ -30,10 +30,9 @@ torchvision = [
 pyjwt = "^2.10.1"
 langchain = "^0.3.13"
 langchain-core = "^0.3.28"
-langchain-unstructured = "0.1.6"
 numpy = "^1.22.4"
 pandas = "^2.2.3"
-scikit-learn = "^1.6.0"
+scikit-learn = "1.7.1"
 networkx = "3.3"
 python-dotenv = "^1.0.1"
 python-frontmatter = "^1.1.0"
@@ -42,15 +41,14 @@ pdf2image = "^1.17.0"
 pymupdf = "^1.25.3"
 more-itertools = "10.1.0"
 docarray = "0.39.1"
-unstructured = {version = "0.16.14", extras = ["doc", "docx", "pdf", "ppt", "pptx", "xlsx"]}
+unstructured = {version = "0.16.16", extras = ["doc", "docx", "pdf", "ppt", "pptx", "xlsx"]}
 cachetools = "5.3.1"
 rank-bm25 = "^0.2.2"
 optimum = {extras = ["openvino"], version = "^1.27.0"}
 nltk = "3.9.1"
 openvino = "2025.2.0"
-pdfplumber = "^0.11.5"
+pdfplumber = "0.11.9"
 theine = "^0.4.4"
-pdfminer-six = "20231228"
 xgboost = "^3.0.2"
 
 [[tool.poetry.source]]

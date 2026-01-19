@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.chainer import ChainCreator, ChainRunner
 from generator.chainer.response_formats import (
     RootClusterSynthesisResultProtocol,
@@ -13,7 +14,6 @@ from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
 from generator.common.constants import FieldNames as Fn
 from generator.common.context import cur_llm_cost_handler
-from generator.common.logger import logging
 from generator.core.structs import RawMindMapData
 from generator.core.utils.constants import Pi
 
@@ -93,7 +93,7 @@ class ProcessingOrchestrator:
             A tuple containing the final concept DataFrame, the final
             relation DataFrame, and the index of the root concept.
         """
-        logging.info("Concept processing: Start")
+        logger.info("Concept processing: Start")
 
         data = RawMindMapData(
             concept_df=self._prep_concept_df(concept_df),
@@ -262,8 +262,8 @@ class ProcessingOrchestrator:
         root_index = data.root_index
 
         llm_cost_handler = cur_llm_cost_handler.get()
-        logging.info(f"=Postprocessing LLM costs:\n{llm_cost_handler}")
-        logging.info(
+        logger.info(f"=Postprocessing LLM costs:\n{llm_cost_handler}")
+        logger.info(
             f"Final Mind Map: {len(concept_df)} nodes, {len(relation_df)} "
             "relationships"
         )
@@ -328,9 +328,7 @@ class AddConceptOrchestrator(ProcessingOrchestrator):
             A tuple containing the final concept DataFrame, the final
             relation DataFrame, and the index of the root concept.
         """
-        logging.info(
-            "Starting concept processing pipeline for adding concepts."
-        )
+        logger.info("Starting concept processing pipeline for adding concepts.")
         concept_df, flat_part_df = await self._prepare_initial_dataframes(
             concept_df, flat_part_df
         )

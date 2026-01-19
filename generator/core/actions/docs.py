@@ -1,71 +1,100 @@
 import asyncio as aio
-import logging
+from typing import List
 
+from langchain_community.document_loaders import AsyncHtmlLoader
+
+from common_utils.logger_config import logger
 from generator.common.interfaces import FileStorage
 from generator.common.structs import Document
 from generator.core.stages.doc_handler.constants import DocContentType, DocType
 from generator.core.stages.doc_handler.structs import DocAndContent
 from generator.core.utils.file_storage import read_file_bytes
-from generator.core.utils.web_handler import fetch_html
 
 
 async def fetch_all_docs_content(
     docs: list[Document], file_storage: FileStorage
 ) -> list[DocAndContent]:
-    tasks = [_fetch_document_content(doc, file_storage) for doc in docs]
-    docs_with_content = await aio.gather(*tasks)
+    """
+    Fetches content for all provided documents concurrently.
+    - Web Links: Uses standard AsyncHtmlLoader (Static fetch).
+    - Files: Processed via internal storage.
+    """
+    if not docs:
+        return []
 
-    successful_fetches = [item for item in docs_with_content if item.content]
+    link_docs = [d for d in docs if d.type == DocType.LINK]
+    file_docs = [d for d in docs if d.type == DocType.FILE]
 
-    failed_docs = [
-        item.doc.url for item in docs_with_content if not item.content
-    ]
+    link_task = _fetch_batch_links(link_docs)
+    file_tasks = [_fetch_file_content(doc, file_storage) for doc in file_docs]
+    all_tasks = [link_task] + file_tasks
+
+    results = await aio.gather(*all_tasks)
+    link_results = results[0]
+    file_results = results[1:]
+    all_results = link_results + list(file_results)
+
+    successful_fetches = [item for item in all_results if item.content]
+    failed_docs = [item.doc.url for item in all_results if not item.content]
+
+    if successful_fetches:
+        successful_docs_names = [item.doc.name for item in successful_fetches]
+        logger.info(f"Successfully fetched content for: {successful_docs_names}")
+
     if failed_docs:
-        logging.warning(f"Failed to fetch content for: {failed_docs}")
+        logger.warning(f"Failed to fetch content for: {failed_docs}")
 
     return successful_fetches
 
 
-async def _fetch_document_content(
+async def _fetch_batch_links(docs: list[Document]) -> list[DocAndContent]:
+    """
+    Fetches web links using only AsyncHtmlLoader (requests/aiohttp).
+    Does NOT support dynamic JS-heavy sites (SPA).
+    """
+    if not docs:
+        return []
+
+    urls = [doc.url for doc in docs]
+    results: List[DocAndContent] = []
+
+    loader = AsyncHtmlLoader(
+        urls, requests_per_second=2, ignore_load_errors=True
+    )
+    logger.info(f"Batch fetching {len(urls)} web links...")
+
+    try:
+        html_contents = await loader.fetch_all(urls)
+
+        for doc, html_content in zip(docs, html_contents):
+            content_str = html_content if html_content else ""
+
+            results.append(DocAndContent(doc=doc, content=content_str))
+
+    except Exception as e:
+        logger.exception(f"Critical error during batch link fetching: {e}")
+        results = [DocAndContent(doc=doc, content="") for doc in docs]
+
+    return results
+
+
+async def _fetch_file_content(
     doc: Document, file_storage: FileStorage
 ) -> DocAndContent:
     """
-    Fetches the content for a single document, ensuring the correct
-    data type.
-
-    - Link content is returned as a string.
-    - Uploaded HTML file content is decoded and returned as a string.
-    - Other file types (PDF, PPTX) are returned as bytes.
+    Helper specifically for internal file storage
+    (PDF, Uploaded HTML, etc.).
     """
-    doc_type = doc.type
-    doc_url = doc.url
+    try:
+        byte_content = await read_file_bytes(file_storage, doc.url)
 
-    # 1. Handle Links: They are always fetched as strings.
-    if doc_type == DocType.LINK:
-        html_content = await fetch_html(doc_url)
-        return DocAndContent(doc=doc, content=html_content or "")
+        if doc.content_type == DocContentType.HTML:
+            return DocAndContent(doc=doc, content=byte_content.decode("utf-8"))
+        return DocAndContent(doc=doc, content=byte_content)
 
-    # 2. Handle Files: This requires checking the content_type.
-    if doc_type == DocType.FILE:
-        try:
-            byte_content = await read_file_bytes(file_storage, doc_url)
+    except Exception as e:
+        logger.error(f"Failed to read file from DIAL for doc {doc.id}: {e}")
 
-            # If the uploaded file is HTML, it must be decoded to a
-            # string.
-            if doc.content_type == DocContentType.HTML:
-                return DocAndContent(
-                    doc=doc, content=byte_content.decode("utf-8")
-                )
-            else:
-                # For all other files (PDF, PPTX), keep them as bytes.
-                return DocAndContent(doc=doc, content=byte_content)
-
-        except Exception as e:
-            logging.error(
-                f"Failed to read file from DIAL for doc {doc.id}: {e}"
-            )
-            return DocAndContent(doc=doc, content=b"")
-
-    # 3. Fallback for unsupported cases
-    logging.warning(f"Could not fetch content for doc {doc.id}: {doc_url}")
-    return DocAndContent(doc=doc, content=b"")
+        if doc.content_type == DocContentType.HTML:
+            return DocAndContent(doc=doc, content="")
+        return DocAndContent(doc=doc, content=b"")

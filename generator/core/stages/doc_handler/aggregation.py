@@ -1,14 +1,19 @@
-import logging
-
 from langchain_core.documents import Document as LCDoc
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from tiktoken import Encoding
+
+from common_utils.logger_config import logger
+from generator.chainer import LLMUtils
 
 from .structs import PageContent
 from .utils import calculate_image_tokens
 
 
 def aggregate_text_chunks(
-    chunks: list[LCDoc], encoder, max_chunk_size: int, header_to_split_on: str
+    chunks: list[LCDoc],
+    max_chunk_size: int,
+    header_to_split_on: str = "Header 1",
+    encoder: Encoding = LLMUtils.get_encoding_for_model(),
 ) -> list[LCDoc]:
     """
     Merges small text chunks into larger ones respecting the token
@@ -109,7 +114,7 @@ def _split_oversized_page(
     """
     Splits a single oversized PageContent object into smaller ones.
     """
-    logging.warning(
+    logger.warning(
         f"Page/Slide {page.page_id} is oversized ({page.tokens} tokens). "
         "Splitting."
     )
@@ -135,7 +140,7 @@ def _split_oversized_page(
                 images = page.images
                 img_tokens = potential_img_tokens
             else:
-                logging.warning(
+                logger.warning(
                     f"Image(s) on page {page.page_id} were skipped because "
                     "they would create an oversized chunk."
                 )

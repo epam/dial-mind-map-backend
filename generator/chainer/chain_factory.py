@@ -12,9 +12,10 @@ from langchain_community.callbacks import get_openai_callback
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig, RunnableSerializable
-from openai import RateLimitError
+from openai import LengthFinishReasonError, RateLimitError
 from pydantic import ValidationError
 
+from common_utils.logger_config import logger
 from generator.common.context import cur_llm_cost_handler
 from generator.common.exceptions import GeneratorException
 
@@ -230,11 +231,11 @@ class ChainRunner:
                 )
 
             except ValidationError as e:
-                logging.warning(f"Validation error on attempt {attempt + 1}. ")
-                logging.debug(
-                    "LLM prompt that caused the error: "
-                    f"{prompt_logger.get_last_prompt()}"
-                )
+                logger.warning(f"Validation error on attempt {attempt + 1}. ")
+                # log.debug(
+                #     "LLM prompt that caused the error: "
+                #     f"{prompt_logger.get_last_prompt()}"
+                # )
 
                 last_known_malformed_result = {
                     ".".join(map(str, err["loc"])): err["input"]
@@ -244,7 +245,7 @@ class ChainRunner:
                 if attempt < max_retries and retry_field_name:
                     field_error_config = FIELD_TO_ERRORS.get(retry_field_name)
                     if not field_error_config:
-                        logging.warning(
+                        logger.warning(
                             "No retry configuration for field "
                             f"'{retry_field_name}'."
                         )
@@ -255,13 +256,13 @@ class ChainRunner:
                         field_name=retry_field_name,
                         error_types=field_error_config.get(Fv.ERROR_TYPES),
                     ):
-                        logging.warning(
+                        logger.warning(
                             f"Attempt {attempt + 1} failed on validation for "
                             f"'{retry_field_name}'. Retrying without cache."
                         )
 
                         if not isinstance(current_input.get("messages"), list):
-                            logging.warning(
+                            logger.warning(
                                 "Cannot retry: 'messages' key not found in "
                                 "input_data or is not a list. Skipping retries."
                             )
@@ -286,28 +287,76 @@ class ChainRunner:
                         ) + [HumanMessage(content=error_message)]
                         continue
 
-                logging.warning(
+                logger.warning(
                     "Chain execution failed Pydantic validation after all "
                     "retries. Returning the last-known malformed result."
                 )
                 break
 
             except RateLimitError:
-                logging.error("Rate limit error encountered.")
-                logging.debug(
-                    "LLM prompt that caused the error: "
-                    f"{prompt_logger.get_last_prompt()}"
-                )
+                logger.error("Rate limit error encountered.")
+                # log.debug(
+                #     "LLM prompt that caused the error: "
+                #     f"{prompt_logger.get_last_prompt()}"
+                # )
                 raise
 
+            except LengthFinishReasonError as e:
+
+                logger.warning(
+                    f"Attempt {attempt + 1} failed because the model's output "
+                    "was truncated (hit the token limit)."
+                )
+                # log.warning(
+                #     "LLM prompt that caused the error: "
+                #     f"{prompt_logger.get_last_prompt()}"
+                # )
+
+                if e.completion and e.completion.choices:
+                    # partial_completion = e.completion.choices[0].message.content
+                    # Log the partial output to see what the model was trying to generate.
+                    # log.warning(
+                    #     "Partial completion received before truncation:\n"
+                    #     f"--- START ---\n{partial_completion}\n--- END ---"
+                    # )
+
+                    usage_info = e.completion.usage
+                    logger.warning(f"Token usage for this attempt: {usage_info}")
+                else:
+                    logger.warning(
+                        "No partial completion or usage info was available in the error."
+                    )
+
+                if attempt < max_retries:
+                    logger.warning(
+                        "Retrying with an instruction to be more concise."
+                    )
+
+                    if not isinstance(current_input.get("messages"), list):
+                        logger.error(
+                            "Cannot retry for length: 'messages' key not found in "
+                            "input_data or is not a list. Failing."
+                        )
+                        break
+
+                    error_message = (
+                        "Your previous response was too long and was cut off. "
+                        "Please regenerate the entire response, but be more "
+                        "concise."
+                    )
+
+                    current_input["messages"] = list(
+                        current_input["messages"]
+                    ) + [HumanMessage(content=error_message)]
+
+                    continue
+
             except Exception as e:
-                logging.error(
-                    "An error occurred during chain execution: " f"{e}."
-                )
-                logging.debug(
-                    "LLM prompt that caused the error: "
-                    f"{prompt_logger.get_last_prompt()}"
-                )
+                logger.error("An error occurred during chain execution: " f"{e}.")
+                # log.debug(
+                #     "LLM prompt that caused the error: "
+                #     f"{prompt_logger.get_last_prompt()}"
+                # )
                 raise GeneratorException(
                     f"An unexpected error occurred during chain execution: {e}"
                 ) from e

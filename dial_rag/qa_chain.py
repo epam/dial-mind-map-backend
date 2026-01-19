@@ -149,7 +149,7 @@ async def make_image_by_page(
 
 
 def create_docs_message(
-    doc_records, chunks_metadatas, image_by_page
+    doc_records, chunks_metadatas, image_by_page, id_offset: int
 ) -> List[Dict[str, dict]]:
     attached_images = set()
     docs_message = []
@@ -158,7 +158,7 @@ def create_docs_message(
         doc_record = doc_records[chunk_metadata["doc_id"]]
         chunk = doc_record.chunks[chunk_metadata["chunk_id"]]
 
-        attributes = format_attributes(i, chunk.metadata)
+        attributes = format_attributes(i + id_offset, chunk.metadata)
         docs_message.append(text_element(f"<doc {attributes}>\n{chunk.text}\n"))
 
         image_key = (
@@ -198,7 +198,7 @@ async def create_chat_prompt(input: dict):
     )
 
     docs_message = create_docs_message(
-        doc_records, chunks_metadatas, image_by_page
+        doc_records, chunks_metadatas, image_by_page, 0
     )
 
     template = ChatPromptTemplate.from_messages(

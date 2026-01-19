@@ -4,6 +4,7 @@ from typing import Any, Hashable, Union
 import numpy as np
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.chainer import Embedder
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
@@ -205,7 +206,7 @@ def prepare_new_concept_from_dict(
         if source_id in concept_df.index:
             valid_source_ids.append(source_id)
         else:
-            logging.warning(f"Nonexistent source_id: {source_id} skipped.")
+            logger.warning(f"Nonexistent source_id: {source_id} skipped.")
 
     flat_part_ids = set()
     embedding = None
@@ -264,7 +265,7 @@ def prepare_new_concept_from_name(
     # for this logic path.
     source_ids = concept_df.loc[name_mask & active_mask].index
     if source_ids.empty:
-        logging.warning(f"No active concept found for name: {source_name}")
+        logger.warning(f"No active concept found for name: {source_name}")
         return None, []
 
     source_id = int(source_ids.values[0])

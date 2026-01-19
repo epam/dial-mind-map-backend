@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 from typing import Any, Dict
 
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
@@ -11,6 +12,7 @@ from openai import RateLimitError
 from pydantic.types import SecretStr
 from theine import Cache
 
+from dial_rag.app import QA_CHAIN_CONFIG
 from dial_rag.dial_config import DialConfig
 from dial_rag.dial_user_limits import get_user_limits_for_model
 from dial_rag.document_record import DocumentRecord
@@ -45,16 +47,12 @@ def doc_to_attach(document: Document, index=None) -> dict:
 
 
 async def get_subgraph_logic(
-    mindmap_folder: str, request: Dict[str, Any]
+    client: DialClient, request: Dict[str, Any]
 ) -> Dict[str, Any]:
     depth = request["depth"]
     node = request.get("node", None)
     previous_node = request.get("previous_node", None)
     max_nodes = request.get("max_nodes", 19)
-
-    client = await DialClient.create_with_folder(
-        DIAL_URL, "audo", mindmap_folder, ""
-    )
 
     await client.read_metadata()
 
@@ -94,7 +92,7 @@ async def get_subgraph_logic(
         else:
             docs = result[1]["documents"]
 
-    file_reader = BatchFileReader(client)
+    file_reader = BatchFileReader(client, file_cache)
 
     storage_url_to_id = {}
     for i, source in enumerate(docs):
@@ -148,14 +146,10 @@ class Mindmap(ChatCompletion):
         self, request: Request, response: Response
     ) -> None:
         properties = await request.request_dial_application_properties()
-        assert properties
-        mindmap_folder = properties["mindmap_folder"]
+        assert properties is not None
 
-        client = await DialClient.create_with_folder(
-            DIAL_URL or "",
-            request.api_key,
-            mindmap_folder,
-            request.headers.get("etag", ""),
+        client = await DialClient.create_without_request(
+            DIAL_URL or "", request.headers.get("etag", ""), properties
         )
 
         if (
@@ -169,7 +163,7 @@ class Mindmap(ChatCompletion):
                     title="subgraph",
                     data=json.dumps(
                         await get_subgraph_logic(
-                            mindmap_folder,
+                            client,
                             request.custom_fields.configuration[
                                 "subgraph_request"
                             ],
@@ -274,7 +268,7 @@ class Mindmap(ChatCompletion):
                         )
                     )
 
-        file_reader = BatchFileReader(client)
+        file_reader = BatchFileReader(client, file_cache)
 
         storage_url_to_id = {}
         for i, source in enumerate(docs):
@@ -285,7 +279,7 @@ class Mindmap(ChatCompletion):
         for result in await file_reader.read():
             docs[storage_url_to_id[result[0]]] = result[1]
 
-        file_reader = BatchFileReader(client)
+        file_reader = BatchFileReader(client, file_cache)
         index_file_to_doc_id = {}
         for doc in docs:
             if not doc.get("active", True) or doc["status"] != "INDEXED":
@@ -316,28 +310,50 @@ class Mindmap(ChatCompletion):
 
         graph_data = Graph(nodes + edges)
 
-        self.rag = Rag(
-            nodes_docstore,
-            patch_docstore,
-            graph_data,
-            records,
-            RequestContext(
-                dial_url=self.dial_url,
-                api_key=request.api_key,
-                choice=None,
-                dial_limited_resources=DialLimitedResources(
-                    lambda model_name: get_user_limits_for_model(
-                        DialConfig(
-                            dial_url=self.dial_url,
-                            api_key=SecretStr(request.api_key),
-                        ),
-                        model_name,
-                    )
-                ),
-            ),
-        )
-
         with response.create_single_choice() as choice:
+            qa_chain_config = QA_CHAIN_CONFIG
+            rag_model = client._metadata.params.get("chat_model") or os.getenv(
+                "RAG_MODEL", default="gpt-4.1-2025-04-14"
+            )
+            qa_chain_config.chat_chain_config.llm_config.model_deployment_name = (
+                rag_model
+            )
+            qa_chain_config.query_chain_config.llm_config.model_deployment_name = (
+                rag_model
+            )
+            self.rag = Rag(
+                nodes_docstore,
+                patch_docstore,
+                rag_model,
+                graph_data,
+                records,
+                RequestContext(
+                    dial_url=self.dial_url,
+                    api_key=request.api_key,
+                    chat_guardrails_enabled=client._metadata.params.get(
+                        "chat_guardrails_enabled", False
+                    ),
+                    chat_prompt=client._metadata.params.get("chat_prompt", ""),
+                    chat_guardrails_prompt=client._metadata.params.get(
+                        "chat_guardrails_prompt", ""
+                    ),
+                    chat_guardrails_response_prompt=client._metadata.params.get(
+                        "chat_guardrails_response_prompt", ""
+                    ),
+                    choice=choice,
+                    dial_limited_resources=DialLimitedResources(
+                        lambda model_name: get_user_limits_for_model(
+                            DialConfig(
+                                dial_url=self.dial_url,
+                                api_key=SecretStr(request.api_key),
+                            ),
+                            model_name,
+                        )
+                    ),
+                ),
+                qa_chain_config=qa_chain_config,
+            )
+
             rag_chain = self.rag.create_chain(
                 records,
                 self.dial_url,

@@ -3,13 +3,13 @@ from typing import Optional
 
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.chainer import ChainCreator
 from generator.chainer import ChainRunner as Cr
 from generator.chainer.utils.constants import ChainTypes as Ct
 from generator.common.constants import DataFrameCols as Col
 from generator.common.constants import FieldNames as Fn
 from generator.common.context import cur_llm_cost_handler
-from generator.common.logger import logging
 from generator.core.actions.llm import form_multimodal_inputs, form_text_inputs
 from generator.core.stages.doc_handler.constants import DocCategories as DocCat
 from generator.core.structs import ExtractionProduct
@@ -66,11 +66,11 @@ class Extractor:
             None for DataFrames if no concepts are extracted.
         """
         if not is_add_mode:
-            logging.info("Extraction: Start")
+            logger.info("Extraction: Start")
         else:
-            logging.info("Add Extraction: Start")
+            logger.info("Add Extraction: Start")
             if chunk_df.empty:
-                logging.warning(
+                logger.warning(
                     "Add mode was selected, but the provided chunk_df is empty."
                 )
                 return await self._wrap_up(chunk_df)
@@ -84,7 +84,7 @@ class Extractor:
         )
 
         if not concepts:
-            logging.warning("No concepts were extracted from the documents.")
+            logger.warning("No concepts were extracted from the documents.")
             return await self._wrap_up(chunk_df)
 
         concept_df = self._create_concept_df(concepts, chunk_df, flat_part_df)
@@ -147,7 +147,7 @@ class Extractor:
                 all_indices.extend(indices)
 
         if not chains_with_inputs:
-            logging.warning("No processable chunks found for extraction.")
+            logger.warning("No processable chunks found for extraction.")
             return []
 
         # Run extraction with frontend status updates
@@ -403,7 +403,7 @@ class Extractor:
 
         rows_with_nans = rel_df[rel_df.isna().any(axis=1)]
         if not rows_with_nans.empty:
-            logging.warning(
+            logger.warning(
                 "The following relations with nonexistent concepts "
                 f"were removed:\n{rows_with_nans}"
             )
@@ -429,7 +429,7 @@ class Extractor:
         """Updates the frontend with the extraction progress."""
         chunk_text = "chunk" if completed == 1 else "chunks"
         status_msg = f"{completed} {chunk_text} out of {total} processed"
-        logging.info(status_msg)
+        logger.info(status_msg)
 
         raw_percentage = (completed / total) * 100 if total > 0 else 100
         rounded_percentage = max(5, 5 * round(raw_percentage / 5))
@@ -450,11 +450,11 @@ class Extractor:
             concept_count = len(concept_df)
             node_text = "node" if concept_count == 1 else "nodes"
             verb_text = "was" if concept_count == 1 else "were"
-            logging.info(f"{concept_count} {node_text} {verb_text} extracted.")
+            logger.info(f"{concept_count} {node_text} {verb_text} extracted.")
 
             llm_cost_handler = cur_llm_cost_handler.get()
-            logging.info(f"Extraction LLM costs:\n{llm_cost_handler}")
-            logging.info("Extraction: End")
+            logger.info(f"Extraction LLM costs:\n{llm_cost_handler}")
+            logger.info("Extraction: End")
 
         await self.queue.put(None)
 

@@ -1,7 +1,12 @@
 import asyncio
+import os
 
 import aiohttp
 from fastapi import HTTPException
+
+from general_mindmap.utils.log_config import logger
+
+BATCH_DELETE_REQUESTS_LIMIT = int(os.getenv("BATCH_DELETE_REQUESTS_LIMIT", 300))
 
 
 class BatchFileDeleter:
@@ -36,9 +41,18 @@ class BatchFileDeleter:
         if not len(self.files):
             return []
 
+        logger.info(f"Starting batch file delete (0/{len(self.files)})")
+
         async with aiohttp.ClientSession() as session:
             tasks = [
                 asyncio.ensure_future(self.delete_file(file, session))
                 for file in self.files
             ]
-            return await asyncio.gather(*tasks)
+
+            result = await asyncio.gather(*tasks)
+
+        logger.info(
+            f"Finished batch file delete ({len(self.files)}/{len(self.files)})"
+        )
+
+        return result

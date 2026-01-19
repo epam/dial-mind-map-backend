@@ -1,5 +1,4 @@
 import asyncio as aio
-import logging
 
 from langchain_core.documents import Document as LCDoc
 from langchain_text_splitters import (
@@ -7,12 +6,12 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
 )
 
-from generator.chainer.model_handler import LLMUtils
+from common_utils.logger_config import logger
 from generator.common.constants import DataFrameCols as Col
 from generator.core.utils.web_handler import conv_html_to_md
 
 from ..aggregation import aggregate_text_chunks
-from ..constants import DEFAULT_DOC_DESC
+from ..constants import DEFAULT_DOC_DESC, MAX_CHUNK_SIZE
 from ..constants import DocCategories as DocCat
 from ..constants import DocType
 from ..registry import register_handler
@@ -20,9 +19,7 @@ from ..structs import Chunk, DocAndContent
 from .base_chunker import BaseDocChunker
 
 # --- Constants ---
-MAX_CHUNK_SIZE = 2048
 HEADER_TO_SPLIT_ON = "Header 1"
-ENCODER = LLMUtils.get_encoding_for_model()
 
 
 @register_handler
@@ -38,7 +35,7 @@ class HTMLChunker(BaseDocChunker):
         Converts HTML to Markdown and splits it into optimized chunks.
         """
         if not isinstance(item.content, str):
-            logging.warning(
+            logger.warning(
                 f"Expected string for HTML {item.doc.id}, got non-string."
             )
             return []
@@ -54,7 +51,7 @@ class HTMLChunker(BaseDocChunker):
             return []
 
         merged_lc_docs = aggregate_text_chunks(
-            initial_chunks, ENCODER, MAX_CHUNK_SIZE, HEADER_TO_SPLIT_ON
+            initial_chunks, MAX_CHUNK_SIZE, HEADER_TO_SPLIT_ON
         )
 
         doc_cat = DocCat.LINK if item.doc.type == DocType.LINK else DocCat.HTML
@@ -74,9 +71,7 @@ class HTMLChunker(BaseDocChunker):
     async def to_markdown(self, item: DocAndContent) -> str:
         """Converts an HTML-like document's content to Markdown."""
         if not isinstance(item.content, str):
-            logging.warning(
-                f"Expected string for {item.doc.id}, got non-string."
-            )
+            logger.warning(f"Expected string for {item.doc.id}, got non-string.")
             return ""
         md_content, _ = await aio.to_thread(
             conv_html_to_md, item.content, item.doc.base_url
@@ -100,7 +95,7 @@ class WholeHTMLChunker(BaseDocChunker):
         chunk.
         """
         if not isinstance(item.content, str):
-            logging.warning(
+            logger.warning(
                 f"Expected string for HTML {item.doc.id}, got non-string."
             )
             return []
@@ -136,9 +131,7 @@ class WholeHTMLChunker(BaseDocChunker):
         """Converts an HTML-like document's content to Markdown."""
         # Logic is identical to the standard HTMLChunker
         if not isinstance(item.content, str):
-            logging.warning(
-                f"Expected string for {item.doc.id}, got non-string."
-            )
+            logger.warning(f"Expected string for {item.doc.id}, got non-string.")
             return ""
         md_content, _ = await aio.to_thread(
             conv_html_to_md, item.content, item.doc.base_url

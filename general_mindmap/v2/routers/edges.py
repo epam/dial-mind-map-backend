@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from general_mindmap.utils.graph_patch import embeddings_model
 from general_mindmap.v2.config import DIAL_URL
-from general_mindmap.v2.dial.client import DialClient
+from general_mindmap.v2.dial.client import PROCESSING_LIMIT, DialClient
 from general_mindmap.v2.models.edge_type import EdgeType
 from general_mindmap.v2.models.metadata import (
     HistoryItem,
@@ -51,14 +51,7 @@ async def add_edge(request: Request):
     if req.data.type and req.data.type != EdgeType.MANUAL:
         return Response("The type can be only manual", 400)
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.nodes_file and client._metadata.edges_file
@@ -97,7 +90,7 @@ async def add_edge(request: Request):
         ):
             return Response(
                 status_code=400,
-                content="The edge between the nodes is already exists",
+                content="The edge between the nodes already exists",
             )
 
         edge = req.model_dump()
@@ -222,18 +215,11 @@ def get_node_pairs_with_sim(
 
 
 @router.post("/v1/graph/edges/auto")
-@timeout_after()
+@timeout_after(timeout=PROCESSING_LIMIT * 2)
 async def generate_edges(request: Request):
     start_time = str(time())
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.nodes_file and client._metadata.edges_file
@@ -406,14 +392,7 @@ async def generate_edges(request: Request):
 async def delete_generate_edges(request: Request):
     start_time = str(time())
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.edges_file
@@ -457,14 +436,7 @@ async def delete_generate_edges(request: Request):
 async def delete_edge(request: Request, edge_id: str):
     start_time = str(time())
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.edges_file
@@ -537,14 +509,7 @@ async def change_edge(request: Request, edge_id: str):
     if req.data.type and req.data.type != EdgeType.MANUAL:
         return Response("The type can be only manual", 400)
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    async with await DialClient.create(DIAL_URL, request) as client:
         file_reader = BatchFileReader(client)
 
         assert client._metadata.nodes_file and client._metadata.edges_file
@@ -589,7 +554,7 @@ async def change_edge(request: Request, edge_id: str):
         ):
             return Response(
                 status_code=400,
-                content="The edge between the nodes is already exists",
+                content="The edge between the nodes already exists",
             )
 
         for i in range(len(edges)):

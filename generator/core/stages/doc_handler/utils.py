@@ -17,6 +17,7 @@ from pptx.parts.image import Image
 from pptx.presentation import Presentation as IPresentation
 from pptx.slide import Slide
 
+from common_utils.logger_config import logger
 from generator.chainer.model_handler import LLMUtils
 
 
@@ -45,7 +46,7 @@ def calculate_image_tokens(base64_str: str) -> int:
         return LLMUtils.calculate_img_tokens(width, height)
     # Catch binascii.Error directly instead of through base64
     except (binascii.Error, IOError) as e:
-        logging.error(f"Could not process image for token calculation: {e}")
+        logger.error(f"Could not process image for token calculation: {e}")
         return 0  # Return 0 tokens if the image is invalid
 
 

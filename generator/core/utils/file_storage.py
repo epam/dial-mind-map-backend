@@ -1,7 +1,6 @@
-import logging
-
 from aiohttp import ClientConnectorError, InvalidUrlClientError
 
+from common_utils.logger_config import logger
 from generator.common.interfaces import FileStorage
 
 
@@ -21,13 +20,13 @@ async def read_file_bytes(
     try:
         return await file_storage.read_raw_file_by_url(doc_url)
     except InvalidUrlClientError as e:
-        logging.info(f"The file is incorrect: {doc_url}. Error: {e}")
+        logger.info(f"The file is incorrect: {doc_url}. Error: {e}")
         return None
     except ClientConnectorError as e:
-        logging.info(f"Cannot download the file: {doc_url}. Error: {e}")
+        logger.info(f"Cannot download the file: {doc_url}. Error: {e}")
         return None
     except Exception as e:
-        logging.error(
+        logger.error(
             f"Unexpected error when downloading file: {doc_url}. Error: {e}"
         )
         return None

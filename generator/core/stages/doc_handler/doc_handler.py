@@ -5,6 +5,7 @@ from itertools import chain as iter_chain
 import numpy as np
 import pandas as pd
 
+from common_utils.logger_config import logger
 from generator.common.constants import DataFrameCols as Col
 from generator.core.utils.constants import FrontEndStatuses as Fes
 from generator.core.utils.frontend_handler import put_status
@@ -43,7 +44,7 @@ class DocHandler:
         """
         self.queue = queue
         self.strategy = strategy
-        logging.info(f"DocHandler initialized with strategy: '{self.strategy}'")
+        logger.info(f"DocHandler initialized with strategy: '{self.strategy}'")
 
     async def chunk_docs(
         self,
@@ -51,7 +52,7 @@ class DocHandler:
         start_part_id: int = 0,
     ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
         """Unified entry point for chunking a set of documents."""
-        logging.info(f"Document chunking: Start (Mode: {Fes.LOAD_DOCS})")
+        logger.info(f"Document chunking: Start (Mode: {Fes.LOAD_DOCS})")
         if self.queue:
             await put_status(self.queue, Fes.LOAD_DOCS)
 
@@ -63,7 +64,7 @@ class DocHandler:
             if handler:
                 tasks.append(aio.create_task(handler.chunk(item)))
             else:
-                logging.warning(
+                logger.warning(
                     f"No handler found for doc category: {doc_cat}. Skipping."
                 )
 
@@ -99,7 +100,7 @@ class DocHandler:
         """
         Converts a list of documents into their markdown representation.
         """
-        logging.info("Document to markdown conversion: Start")
+        logger.info("Document to markdown conversion: Start")
         tasks = []
         for item in docs_with_content:
             doc_cat = self._get_doc_cat(item.doc)
@@ -107,13 +108,13 @@ class DocHandler:
             if handler:
                 tasks.append(aio.create_task(handler.to_markdown(item)))
             else:
-                logging.warning(
+                logger.warning(
                     f"No handler for markdown conversion: {doc_cat}. Skipping."
                 )
                 tasks.append(aio.create_task(self._empty_markdown()))
 
         markdown_docs = await aio.gather(*tasks)
-        logging.info("Document to markdown conversion: End")
+        logger.info("Document to markdown conversion: End")
         return markdown_docs
 
     @staticmethod
@@ -196,7 +197,7 @@ class DocHandler:
         doc_str = "document" if num_docs == 1 else "documents"
         chunk_str = "chunk" if num_chunks == 1 else "chunks"
         verb_str = "was" if num_docs == 1 else "were"
-        logging.info(
+        logger.info(
             f"{num_docs} {doc_str} {verb_str} split into {num_chunks} "
             f"{chunk_str}"
         )

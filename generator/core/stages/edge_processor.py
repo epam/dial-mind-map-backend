@@ -9,10 +9,10 @@ import pandas as pd
 from langchain_community.vectorstores import FAISS
 from sklearn.metrics.pairwise import cosine_similarity
 
+from common_utils.logger_config import logger
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
 from generator.common.context import cur_llm_cost_handler
-from generator.common.logger import logging
 from generator.core.utils.constants import FrontEndStatuses as Fes
 from generator.core.utils.frontend_handler import put_status
 
@@ -297,12 +297,12 @@ class EdgeProcessor:
         scc = list(nx.strongly_connected_components(graph))
         scc_num = len(scc)
         if is_strong_con := scc_num == 1:
-            logging.info(f"Is the graph strongly connected? {is_strong_con}")
-            logging.info(f"Number of Strongly Connected Components: {scc_num}")
-            logging.info(f"SCC sizes: {[len(component) for component in scc]}")
+            logger.info(f"Is the graph strongly connected? {is_strong_con}")
+            logger.info(f"Number of Strongly Connected Components: {scc_num}")
+            logger.info(f"SCC sizes: {[len(component) for component in scc]}")
         else:
             is_weak_con = is_strong_con or nx.is_weakly_connected(graph)
-            logging.info(f"Is the graph weakly connected? {is_weak_con}")
+            logger.info(f"Is the graph weakly connected? {is_weak_con}")
 
         return scc, is_strong_con
 
@@ -630,9 +630,9 @@ class EdgeProcessor:
             ),
         )
         llm_cost_handler = cur_llm_cost_handler.get()
-        logging.info(f"=Postprocessing LLM costs:\n{llm_cost_handler}")
+        logger.info(f"=Postprocessing LLM costs:\n{llm_cost_handler}")
         await self.queue.put(None)
-        logging.info("Edge Enhancing end")
+        logger.info("Edge Enhancing end")
         return edge_df, root_index
 
     async def enhance_edges(
@@ -666,7 +666,7 @@ class EdgeProcessor:
         if len(concept_df) == 1:
             return relation_df, root_index
 
-        logging.info("Enhancing edges")
+        logger.info("Enhancing edges")
 
         num_nodes = len(concept_df)
         similarity_df = self._get_similarity_df(concept_df)

@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import json
 from copy import deepcopy
 from time import time
@@ -9,6 +11,9 @@ from fastapi.responses import StreamingResponse
 from langchain_community.vectorstores import FAISS
 from openai import RateLimitError
 
+from common_utils.context import cur_run_id
+from dial_rag.document_record import DocumentRecord
+from dial_rag.index_storage import SERIALIZATION_CONFIG
 from general_mindmap.models.graph import Node
 from general_mindmap.utils.docstore import (
     embeddings_model,
@@ -22,12 +27,11 @@ from general_mindmap.utils.graph_patch import (
 from general_mindmap.utils.graph_patch import (
     node_to_document as patch_node_to_document,
 )
+from general_mindmap.utils.streaming import stream_and_wait
 from general_mindmap.v2.config import DIAL_URL
 from general_mindmap.v2.dial.client import DialClient
-from general_mindmap.v2.generator.simple import (
-    GeneratorConfig,
-    TwoStageGenerator,
-)
+from general_mindmap.v2.generator.simple import GeneratorConfig
+from general_mindmap.v2.generator.two_step import TwoStageGenerator
 from general_mindmap.v2.models.metadata import (
     HistoryItem,
     HistoryItemType,
@@ -37,7 +41,6 @@ from general_mindmap.v2.routers.sources import add_generated_to_docs
 from general_mindmap.v2.utils.batch_file_reader import BatchFileReader
 from general_mindmap.v2.utils.batch_file_writer import BatchFileWriter
 from generator import MindMapGenerator
-from generator.common.context import cur_run_id
 from generator.common.misc import ContextPreservingAsyncIterator
 from generator.common.structs import (
     ApplyMindmapRequest,
@@ -75,6 +78,19 @@ async def generate(
         if not doc.get("active", True):
             continue
 
+        _id = doc["id"]
+        version = doc["version"]
+        index_file_path = f"sources/{_id}/versions/{version}/index"
+        index_file_content = await client.read_file_by_url(
+            client.make_url(index_file_path)
+        )
+        rag_record = index_file_content["rag_record"]
+        decoded_record = base64.b64decode(rag_record)
+        doc_record = DocumentRecord.from_bytes(
+            decoded_record, **SERIALIZATION_CONFIG
+        )
+        doc_chunks = doc_record.chunks
+
         if doc["type"] == "FILE" or "copy_url" in doc:
             builded_docs.append(
                 Document(
@@ -87,6 +103,8 @@ async def generate(
                     or "text/html",
                     base_url=doc.get("url"),
                     name=doc.get("name"),
+                    rag_chunks=doc_chunks,
+                    rag_start_id=len(index_file_content["chunks"]),
                 )
             )
         else:
@@ -98,6 +116,8 @@ async def generate(
                     content_type="",
                     base_url=doc.get("url"),
                     name=doc.get("name"),
+                    rag_chunks=doc_chunks,
+                    rag_start_id=len(index_file_content["chunks"]),
                 )
             )
 
@@ -368,6 +388,19 @@ async def apply(
         if not doc.get("active", True):
             continue
 
+        _id = doc["id"]
+        version = doc["version"]
+        index_file_path = f"sources/{_id}/versions/{version}/index"
+        index_file_content = await client.read_file_by_url(
+            client.make_url(index_file_path)
+        )
+        rag_record = index_file_content["rag_record"]
+        decoded_record = base64.b64decode(rag_record)
+        doc_record = DocumentRecord.from_bytes(
+            decoded_record, **SERIALIZATION_CONFIG
+        )
+        doc_chunks = doc_record.chunks
+
         if doc["type"] == "FILE" or "copy_url" in doc:
             builded_docs.append(
                 Document(
@@ -380,6 +413,8 @@ async def apply(
                     or "text/html",
                     base_url=doc.get("url"),
                     name=doc.get("name"),
+                    rag_chunks=doc_chunks,
+                    rag_start_id=len(index_file_content["chunks"]),
                 )
             )
         else:
@@ -391,6 +426,8 @@ async def apply(
                     content_type="",
                     base_url=doc.get("url"),
                     name=doc.get("name"),
+                    rag_chunks=doc_chunks,
+                    rag_start_id=len(index_file_content["chunks"]),
                 )
             )
 
@@ -679,21 +716,14 @@ async def generate_wrapper(
 
 
 @router.post("/v1/generate")
-async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
+async def generate_mindmap(request: Request):
     request_body = None
     if (await request.body()).strip():
         request_body = await request.json()
     else:
         request_body = {}
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL or "",
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.open()
     await client.write_file(
@@ -734,13 +764,12 @@ async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
     for result in await file_reader.read():
         docs_file["documents"][storage_url_to_id[result[0]]] = result[1]
 
+    generation_task = None
     if "sources" in request_body:
-        background_tasks.add_task(
-            apply_wrapper,
-            client,
-            docs_file,
-            request_body["sources"],
-            old_documents_file,
+        generation_task = asyncio.create_task(
+            apply_wrapper(
+                client, docs_file, request_body["sources"], old_documents_file
+            )
         )
     else:
         if client._metadata.params.get("type", "universal") == "universal":
@@ -750,29 +779,107 @@ async def generate_mindmap(request: Request, background_tasks: BackgroundTasks):
         else:
             _config = GeneratorConfig(
                 model=client._metadata.params.get("model", ""),
-                prompt=client._metadata.params.get("prompt", ""),
+                gen_prompt=client._metadata.params.get("prompt", ""),
+                rag_prompt=client._metadata.params.get("chat_prompt", ""),
                 dial_url=DIAL_URL,
                 api_key="auto",
             )
-            generator = TwoStageGenerator(_config)
+            generator = TwoStageGenerator(_config, client)
 
-        background_tasks.add_task(
-            generate_wrapper, client, docs_file, old_documents_file, generator
+        generation_task = asyncio.create_task(
+            generate_wrapper(client, docs_file, old_documents_file, generator)
         )
 
-    return Response()
+    data, _ = await client.read_file_and_etag("generate")
+    return StreamingResponse(
+        stream_and_wait(
+            client.subscribe_to_generate(request, data), generation_task
+        ),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/v1/apply")
+async def mark_as_applied(request: Request):
+    start_time = time()
+    request_body = await request.json()
+
+    async with await DialClient.create(DIAL_URL, request) as client:
+        file_reader = BatchFileReader(client)
+
+        assert client._metadata.documents_file
+        docs_file, _ = await client.read_file_and_etag(
+            client._metadata.documents_file
+        )
+
+        storage_url_to_id = {}
+        for i, source in enumerate(docs_file["documents"]):
+            if "storage_url" in source:
+                storage_url_to_id[source["storage_url"]] = i
+                file_reader.add_file(source["storage_url"])
+
+        for result in await file_reader.read():
+            docs_file["documents"][storage_url_to_id[result[0]]] = result[1]
+
+        old_documents_file = client._metadata.documents_file
+        new_documents_file = f"{start_time}_documents"
+        client._metadata.documents_file = new_documents_file
+
+        file_writer = BatchFileWriter(client)
+        for source in docs_file["documents"]:
+            if source["id"] not in request_body["sources"]:
+                continue
+
+            if source.get("active", True):
+                source["in_graph"] = True
+            else:
+                source["in_graph"] = False
+
+            if "storage_url" in source:
+                new_active_storage_url = f"sources/{source['id']}/versions/{source.get('version', 1)}/{start_time}_state"
+                source["storage_url"] = new_active_storage_url
+                file_writer.add_file(new_active_storage_url, source)
+
+        deleted_sources = set()
+        for source in docs_file["documents"]:
+            if source["id"] not in request_body["sources"]:
+                continue
+
+            if source.get("active", True) and source["status"] == "REMOVED":
+                deleted_sources.add(source["id"])
+                if source["id"] in client._metadata.source_names:
+                    del client._metadata.source_names[source["id"]]
+
+        docs_file["documents"] = [
+            source
+            for source in docs_file["documents"]
+            if source["id"] not in deleted_sources
+        ]
+
+        file_writer.add_file(new_documents_file, docs_file)
+
+        await file_writer.write()
+
+        client._metadata.history.append(
+            client._metadata,
+            HistoryStep(
+                user="USER",
+                changes=[
+                    HistoryItem(
+                        old_value=old_documents_file,
+                        new_value=new_documents_file,
+                        type=HistoryItemType.SOURCES,
+                    )
+                ],
+            ),
+        )
+
+        return Response(headers={"ETag": await client.close()})
 
 
 @router.post("/v1/generation_status")
 async def generation_status(request: Request):
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        "",
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     try:
         data, _ = await client.read_file_and_etag("generate")
@@ -785,24 +892,35 @@ async def generation_status(request: Request):
     )
 
 
+def validate_params(d) -> bool:
+    if not isinstance(d, dict):
+        return False
+
+    for k, v in d.items():
+        if not isinstance(k, str):
+            return False
+        if not isinstance(v, (str, bool)):
+            return False
+
+    return True
+
+
 @router.post("/v1/generate/params")
 async def edit_params(request: Request):
     start_time = time()
 
-    async with await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    ) as client:
+    body = await request.json()
+
+    if not validate_params(body):
+        raise HTTPException(400, "Unsupported types")
+
+    async with await DialClient.create(DIAL_URL, request) as client:
         if "last_change" not in client._metadata.model_fields_set:
             client._metadata.last_change = str(start_time)
 
         old_params = deepcopy(client._metadata.params)
 
-        client._metadata.params |= await request.json()
+        client._metadata.params |= body
 
         client._metadata.history.append(
             client._metadata,

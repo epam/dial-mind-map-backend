@@ -60,6 +60,8 @@ class Document(BaseModel):
     content_type: str | None = None
     base_url: str = None
     name: str = None
+    rag_chunks: Any = None
+    rag_start_id: int = 0
 
     model_config = ConfigDict(extra="forbid")
 

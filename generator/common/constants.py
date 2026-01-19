@@ -1,12 +1,15 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
 class EnvConsts:
     @classmethod
     def get_consts_from_env(cls):
+        load_dotenv()
         # Name of the application that uses the generator
         cls.APP_NAME = os.getenv("APP_NAME", "GM")
 
@@ -45,6 +48,11 @@ class EnvConsts:
         # Clustering settings
         cls.IS_STABLE_AGGLOMERATIVE = cls._env_to_bool(
             "IS_STABLE_AGGLOMERATIVE"
+        )
+
+        # Simple generator settings
+        cls.IS_STREAM_SIMPLE_GEN = cls._env_to_bool(
+            "IS_STREAM_SIMPLE_GEN", default=True
         )
 
     @staticmethod

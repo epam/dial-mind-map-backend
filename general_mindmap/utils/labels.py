@@ -10,9 +10,6 @@ from langchain_core.runnables import ConfigurableField, Runnable, chain
 from langchain_openai import AzureChatOpenAI
 from pydantic.types import SecretStr
 
-MODEL_NAME = os.getenv("RAG_MODEL", "gpt-4o-2024-05-13")
-
-
 LABEL_PROMPT = ChatPromptTemplate.from_messages(
     [
         HumanMessagePromptTemplate.from_template(
@@ -34,10 +31,12 @@ def strip_output(x: str) -> str:
     return x.strip()
 
 
-def create_label_chain(dial_url: str, api_key: SecretStr) -> Runnable:
+def create_label_chain(
+    dial_url: str, api_key: SecretStr, rag_model: str
+) -> Runnable:
     llm = AzureChatOpenAI(
         temperature=0,
-        model=MODEL_NAME,
+        model=rag_model or os.getenv("RAG_MODEL", default="gpt-4.1-2025-04-14"),
         api_version="2023-03-15-preview",
         openai_api_type="azure",
         azure_endpoint=dial_url,

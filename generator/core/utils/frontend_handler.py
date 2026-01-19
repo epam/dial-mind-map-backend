@@ -1,6 +1,6 @@
 import asyncio as aio
-import logging
 
+from common_utils.logger_config import logger
 from generator.common.structs import StatusChunk
 
 
@@ -9,8 +9,8 @@ async def put_status(
 ) -> None:
     if details:
         await queue.put(StatusChunk(title=msg, details=details))
-        logging.info(f"{msg}. Details: {details}")
+        logger.info(f"{msg}. Details: {details}")
         return None
     await queue.put(StatusChunk(title=msg))
-    logging.info(msg)
+    logger.info(msg)
     return None

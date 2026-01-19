@@ -1,37 +1,6 @@
-import logging
-import os
 from urllib.parse import urljoin
 
-import aiohttp
-from aiohttp import ClientSession
 from bs4 import BeautifulSoup
-
-from . import constants as const
-
-
-async def fetch_html(url: str, timeout: int = 10) -> str | None:
-    user_agent = os.getenv(const.USER_AGENT, const.DEFAULT_USER_AGENT)
-    headers = {"User-Agent": user_agent}
-    timeout = aiohttp.ClientTimeout(total=timeout)
-
-    try:
-        async with ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                return await response.text()
-    except aiohttp.InvalidURL as e:
-        logging.exception(f"The url: {url} is incorrect. {e}")
-        return None
-    except aiohttp.ClientConnectorError as e:
-        logging.exception(f"Cannot connect to the url: {url}. {e}")
-        return None
-    except aiohttp.client_exceptions.ClientResponseError as e:
-        if e.status == 403:
-            logging.exception(f"Access to the url: {url} is forbidden. {e}")
-        else:
-            error_msg = f"Client response error occurred for url: {url}. {e}"
-            logging.exception(error_msg)
-        return None
 
 
 def conv_html_to_md(

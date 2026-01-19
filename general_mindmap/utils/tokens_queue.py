@@ -2,95 +2,71 @@ import re
 from typing import Dict
 
 MAX_QUEUE_SIZE = 10
+CITATION_PATTERN = re.compile(r"^\[(\d{1,5})(\.(\d{1,5})){2}\]$")
 
 
 def next_interesting_char(a: str):
-    p1 = a.find("[")
-    p2 = a.find("{")
-
-    if p1 == -1:
-        return p2
-    elif p2 == -1:
-        return p1
-    else:
-        return min(p1, p2)
+    return a.find("[")
 
 
 class TokensQueue:
     tokens: str = ""
-    nodes_map: Dict[str, str]
-    chunks_map: Dict[str, str]
+    transofmation_map: Dict[str, str]
+    last_char: str = ""
 
-    def __init__(self, nodes_map: Dict[str, str], chunks_map: Dict[str, str]):
-        self.nodes_map = nodes_map
-        self.chunks_map = chunks_map
+    def __init__(self, transofmation_map: Dict[str, str]):
+        self.transofmation_map = transofmation_map
 
     def add(self, token: str) -> str:
         tokens = self.tokens + token
 
         result = ""
         while len(tokens) > 0:
-            if tokens[0] != "[" and tokens[0] != "{":
+            if tokens[0] != "[":
                 result += tokens[0]
                 tokens = tokens[1:]
                 continue
 
-            if tokens[0] == "[":
-                end = tokens.find("]")
+            end = tokens.find("]")
 
-                if end == -1:
-                    if len(tokens) >= MAX_QUEUE_SIZE:
-                        cut_pos = next_interesting_char(tokens[1:])
+            if end == -1:
+                if len(tokens) >= MAX_QUEUE_SIZE:
+                    cut_pos = next_interesting_char(tokens[1:])
 
-                        if cut_pos == -1:
-                            result += tokens
-                            tokens = ""
-                        else:
-                            result += tokens[:cut_pos]
-                            tokens = tokens[cut_pos:]
+                    if cut_pos == -1:
+                        result += tokens
+                        tokens = ""
                     else:
-                        break  # will wait for next chars
+                        cut_pos += 1
+
+                        result += tokens[:cut_pos]
+                        tokens = tokens[cut_pos:]
                 else:
-                    if re.match(r"\[[0-9]+\]$", tokens[: end + 1]):
-                        id = tokens[1:end]
-
-                        if id in self.chunks_map:
-                            result += f"^[{self.chunks_map[id]}]^"
-                        else:
-                            result += tokens[: end + 1]
-
-                        tokens = tokens[end + 1 :]
-                    else:
-                        result += tokens[: end + 1]
-                        tokens = tokens[end + 1 :]
+                    break  # will wait for next token
             else:
-                end = tokens.find("}")
+                if re.match(r"\[[0-9]+\]$", tokens[: end + 1]):
+                    id = tokens[1:end]
 
-                if end == -1:
-                    if len(tokens) >= MAX_QUEUE_SIZE:
-                        cut_pos = next_interesting_char(tokens[1:])
-
-                        if cut_pos == -1:
-                            result += tokens
-                            tokens = ""
-                        else:
-                            result += tokens[:cut_pos]
-                            tokens = tokens[cut_pos:]
-                    else:
-                        break  # will wait for next chars
-                else:
-                    if re.match(r"\{[0-9]+\}$", tokens[: end + 1]):
-                        id = tokens[1:end]
-
-                        if id in self.nodes_map:
-                            result += f"^[{self.nodes_map[id]}]^"
-                        else:
-                            result += tokens[: end + 1]
-
-                        tokens = tokens[end + 1 :]
+                    if id in self.transofmation_map:
+                        result += f"^[{self.transofmation_map[id]}]^"
                     else:
                         result += tokens[: end + 1]
-                        tokens = tokens[end + 1 :]
+
+                    tokens = tokens[end + 1 :]
+                else:
+                    if (
+                        CITATION_PATTERN.match(tokens[: end + 1])
+                        and self.last_char != "^"
+                    ):
+                        result += f"^{tokens[: end + 1]}^"
+                    else:
+                        result += tokens[: end + 1]
+
+                    tokens = tokens[end + 1 :]
 
         self.tokens = tokens
+
+        if result:
+            self.last_char = result[-1]
+
         return result

@@ -1,5 +1,3 @@
-import json
-
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -16,14 +14,7 @@ router = APIRouter()
 async def get_graph(request: Request, metainfo: str = "True"):
     metainfo_flag = metainfo.lower() == "true"
 
-    client = await DialClient.create_with_folder(
-        DIAL_URL,
-        "auto",
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        request.headers.get("etag", ""),
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     await client.read_metadata()
 
@@ -52,14 +43,7 @@ async def get_graph(request: Request, metainfo: str = "True"):
 
 @router.get("/v1/subscribe")
 async def subscribe(request: Request):
-    client = await DialClient.create_with_folder(
-        DIAL_URL if DIAL_URL else "",
-        request.headers.get("authorization", "-"),
-        json.loads(request.headers["x-dial-application-properties"])[
-            "mindmap_folder"
-        ],
-        "",
-    )
+    client = await DialClient.create(DIAL_URL, request)
 
     return StreamingResponse(
         client.subscribe(request), media_type="text/event-stream"

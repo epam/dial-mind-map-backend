@@ -1,4 +1,5 @@
 import sys
+import traceback
 from logging import Logger
 
 from aiohttp import (
@@ -75,6 +76,8 @@ async def build_index(
         for exception in e.exceptions:
             if isinstance(exception, NotEnoughDailyTokensError):
                 raise exception
+
+        logger.exception(e)
 
         return None
     except (

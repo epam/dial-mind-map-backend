@@ -5,7 +5,7 @@ from generator.common.constants import DataFrameCols as Col
 from generator.core.utils.pdf_handler import get_text_pages, page_to_base64
 
 from ..aggregation import aggregate_page_content
-from ..constants import DEFAULT_DOC_DESC
+from ..constants import DEFAULT_DOC_DESC, MAX_CHUNK_SIZE
 from ..constants import DocCategories as DocCat
 from ..registry import register_handler
 from ..structs import Chunk, DocAndContent, PageContent
@@ -13,7 +13,6 @@ from ..utils import calculate_image_tokens
 from .base_chunker import BaseDocChunker
 
 # Constants can be defined here or imported from a central config
-MAX_CHUNK_SIZE = 2048
 MAX_CHUNK_IMG_NUM = 50
 ENCODER = LLMUtils.get_encoding_for_model()
 

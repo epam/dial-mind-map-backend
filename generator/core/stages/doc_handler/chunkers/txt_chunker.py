@@ -1,23 +1,15 @@
 from langchain_core.documents import Document as LCDoc
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from generator.chainer.model_handler import LLMUtils
+from common_utils.logger_config import logger
 from generator.common.constants import DataFrameCols as Col
-from generator.common.logger import logging
 
 from ..aggregation import aggregate_text_chunks
-from ..constants import DEFAULT_DOC_DESC
+from ..constants import DEFAULT_DOC_DESC, MAX_CHUNK_SIZE
 from ..constants import DocCategories as DocCat
 from ..registry import register_handler
 from ..structs import Chunk, DocAndContent
 from .base_chunker import BaseDocChunker
-
-# --- Constants ---
-MAX_CHUNK_SIZE = 2048
-HEADER_TO_SPLIT_ON = (
-    "Header 1"  # Placeholder, not used by TXT but needed by aggregator
-)
-ENCODER = LLMUtils.get_encoding_for_model()
 
 
 @register_handler
@@ -31,16 +23,14 @@ class TXTChunker(BaseDocChunker):
     async def chunk(self, item: DocAndContent) -> list[Chunk]:
         """Splits a single plain text file into chunks."""
         if not isinstance(item.content, bytes):
-            logging.warning(
-                f"Expected bytes for TXT {item.doc.id}, got non-bytes."
-            )
+            logger.warning(f"Expected bytes for TXT {item.doc.id}, got non-bytes.")
             return []
 
         try:
             text_content = item.content.decode("utf-8")
             doc_title = item.doc.name
         except UnicodeDecodeError:
-            logging.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
+            logger.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
             return []
 
         text_splitter = RecursiveCharacterTextSplitter(
@@ -51,10 +41,7 @@ class TXTChunker(BaseDocChunker):
         if not initial_chunks:
             return []
 
-        # Merging is less likely here but good for consistency
-        merged_lc_docs = aggregate_text_chunks(
-            initial_chunks, ENCODER, MAX_CHUNK_SIZE, HEADER_TO_SPLIT_ON
-        )
+        merged_lc_docs = aggregate_text_chunks(initial_chunks, MAX_CHUNK_SIZE)
 
         return [
             Chunk(
@@ -75,7 +62,7 @@ class TXTChunker(BaseDocChunker):
         try:
             return item.content.decode("utf-8")
         except UnicodeDecodeError:
-            logging.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
+            logger.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
             return ""
 
 
@@ -92,16 +79,14 @@ class WholeTXTChunker(BaseDocChunker):
     async def chunk(self, item: DocAndContent) -> list[Chunk]:
         """Reads the entire text file into a single chunk."""
         if not isinstance(item.content, bytes):
-            logging.warning(
-                f"Expected bytes for TXT {item.doc.id}, got non-bytes."
-            )
+            logger.warning(f"Expected bytes for TXT {item.doc.id}, got non-bytes.")
             return []
 
         try:
             text_content = item.content.decode("utf-8")
             doc_title = item.doc.name
         except UnicodeDecodeError:
-            logging.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
+            logger.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
             return []
 
         if not text_content:
@@ -127,5 +112,5 @@ class WholeTXTChunker(BaseDocChunker):
         try:
             return item.content.decode("utf-8")
         except UnicodeDecodeError:
-            logging.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
+            logger.error(f"Could not decode TXT file {item.doc.id} as UTF-8.")
             return ""

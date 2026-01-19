@@ -7,13 +7,14 @@ import pandas as pd
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from common_utils.logger_config import logger
 from generator.adapter import GMContract as Gmc
 from generator.adapter import GraphFilesAdapter, translate_graph_files
 from generator.common.constants import ColVals
 from generator.common.constants import DataFrameCols as Col
 from generator.common.constants import FieldNames as Fn
 from generator.common.exceptions import ApplyException
-from generator.common.structs import GraphFiles, NodesFile
+from generator.common.structs import EdgesFile, GraphFiles, NodesFile
 from generator.core.structs import MindMapData
 from generator.core.utils.constants import DefaultValues as Dv
 from generator.core.utils.constants import EdgeWeights as Ew
@@ -53,7 +54,7 @@ def validate_graph(
     Raises:
         HTTPException: If the root node is missing or becomes invalid.
     """
-    logging.info("Validate graph: Start")
+    logger.info("Validate graph: Start")
     try:
         graph_files = translate_graph_files(in_graph_files)
     except ValidationError as e:
@@ -142,10 +143,24 @@ def validate_graph(
     if root_id in problematic_ids:
         raise HTTPException(status_code=400, detail="Root is invalid")
 
+    # Get the original edges from the input file
+    original_edges = graph_files.edges_file.edges
+
+    # Filter out edges that connect to a problematic node
+    valid_edges = [
+        edge
+        for edge in original_edges
+        if edge.data.source not in problematic_ids
+        and edge.data.target not in problematic_ids
+    ]
+
+    # Create a new EdgesFile object with only the valid edges
+    updated_edges_file = EdgesFile(edges=valid_edges)
+
     # Pack results back to graph files
     updated_nodes_file = NodesFile(nodes=valid_nodes, root_id=root_id)
     updated_graph_files = GraphFiles(
-        nodes_file=updated_nodes_file, edges_file=graph_files.edges_file
+        nodes_file=updated_nodes_file, edges_file=updated_edges_file
     )
 
     aliased_model_instance = GraphFilesAdapter.model_validate(
@@ -153,7 +168,7 @@ def validate_graph(
     )
     out_graph_files = aliased_model_instance.model_dump(by_alias=True)
 
-    logging.info("Validate graph: End")
+    logger.info("Validate graph: End")
 
     return out_graph_files, problematic_nodes_data
 
@@ -312,6 +327,16 @@ def process_graph(
 
         target_concept_ids = edge_df[Col.TARGET_CONCEPT_ID]
         edge_df[Col.TARGET_CONCEPT_ID] = target_concept_ids.replace(id_map)
+
+        # Get the set of all valid node IDs from the node_df's index
+        valid_node_ids = set(node_df.index)
+
+        # Check which edges have both a valid source and a valid target
+        is_source_valid = edge_df[Col.ORIGIN_CONCEPT_ID].isin(valid_node_ids)
+        is_target_valid = edge_df[Col.TARGET_CONCEPT_ID].isin(valid_node_ids)
+
+        # Keep only the edges where both source and target nodes exist
+        edge_df = edge_df[is_source_valid & is_target_valid].copy()
 
     return (
         MindMapData(node_df=node_df, edge_df=edge_df, root_id=valid_root_id),

@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # but 128 works faster on CPU with openvino backend
 EMBEDDINGS_BATCH_SIZE = 128
 
+# Path to pre-downloaded epam/bge-small-en model for normal use in docker
+# epam/bge-small-en model name is used for the local runs only
 BGE_EMBEDDINGS_MODEL_NAME_OR_PATH = os.environ.get(
     "BGE_EMBEDDINGS_MODEL_PATH", "epam/bge-small-en"
 )

@@ -1,11 +1,9 @@
-import logging
-import threading
-import time
 from functools import wraps
-from typing import TYPE_CHECKING, AsyncGenerator, Callable, ClassVar
+from typing import TYPE_CHECKING, AsyncGenerator, Callable
 
+from common_utils.logger_config import logger
 from generator.common import exceptions as exc
-from generator.common.context import cur_llm_cost_handler, cur_run_id
+from generator.common.context import cur_llm_cost_handler
 from generator.common.llm import LLMCostHandler
 from generator.common.structs import GeneratorStream, MMRequest
 
@@ -24,10 +22,6 @@ class GeneratorConfigurator:
         # Init LLM Cost Tracker
         llm_cost_handler = LLMCostHandler()
         cur_llm_cost_handler.set(llm_cost_handler)
-
-        # Run id context variable
-        run_id = HybridIDGenerator.get_next_id()
-        cur_run_id.set(run_id)
 
 
 if TYPE_CHECKING:
@@ -54,7 +48,7 @@ def handle_exceptions_and_logs(
         request: MMRequest,
     ) -> AsyncGenerator[GeneratorStream, None]:
         func_name = generator_func.__name__.capitalize()
-        logging.info(f"{func_name}: Start")
+        logger.info(f"{func_name}: Start")
         try:
             async for item in generator_func(self, request):
                 yield item
@@ -65,46 +59,11 @@ def handle_exceptions_and_logs(
             exc.ApplyException,
             exc.GenerationException,
         ) as e:
-            logging.exception(e.msg)
+            logger.exception(e.msg)
             raise
         finally:
             llm_cost_handler = cur_llm_cost_handler.get()
-            logging.info(Lm.LLM_COST.format(llm_cost_handler))
-            logging.info(f"{func_name}: End")
+            logger.info(Lm.LLM_COST.format(llm_cost_handler))
+            logger.info(f"{func_name}: End")
 
     return wrapper
-
-
-class HybridIDGenerator:
-    """
-    A thread-safe hybrid ID generator
-    that combines timestamp and a counter.
-
-    Generates unique IDs by using microsecond-precision timestamps
-    and a counter that increments when multiple IDs are requested
-    within the same microsecond.
-    """
-
-    _prev_time: ClassVar[int] = 0
-    _counter: ClassVar[int] = 0
-    _lock: ClassVar[threading.Lock] = threading.Lock()
-
-    @classmethod
-    def get_next_id(cls) -> str:
-        """
-        Generate a unique ID by combining current time and a counter.
-
-        Returns:
-            str: A unique ID in the format "timestamp-counter"
-        """
-        with cls._lock:
-            # Use time_ns() for better precision, convert to microseconds
-            current_time = time.time_ns() // 1000
-
-            if current_time == cls._prev_time:
-                cls._counter += 1
-            else:
-                cls._counter = 0
-                cls._prev_time = current_time
-
-            return f"{current_time}-{cls._counter}"
