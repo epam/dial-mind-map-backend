@@ -5,7 +5,7 @@ include:
     file: helm/helm-environment.gitlab-ci.yml
 
 variables:
-  DOCKER_PATH: "ai/dial/application/general-mindmap"
+  DOCKER_PATH: "ai/dial/application/mind-map-backend"
   DOCKER_REGISTRY_SERVER: "registry-dev.deltixhub.com"
   HELM_REPO: https://charts.epam-rail.com
   PRIVATE_HELM_REPO: "false"
@@ -84,6 +84,16 @@ destroy_development:
     - if: $CI_COMMIT_BRANCH == "development"
       when: manual
       allow_failure: true
+
+trigger_deploy:
+  stage: deploy
+  inherit:
+    variables: false
+  trigger:
+    project: Clients/dial/dev/mindmap/mindmap-backend
+    strategy: depend
+  rules:
+    - if: $CI_COMMIT_BRANCH == "development"
 
 deploy_staging:
   stage: deploy

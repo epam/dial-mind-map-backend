@@ -1,0 +1,6 @@
+streamlit
+aiohttp
+dotenv
+openai
+streamlit_code_editor
+openpyxl

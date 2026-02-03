@@ -15,3 +15,7 @@ embeddings_cache
 
 perf_test
 tests/manual/out.csv
+/mindmap/generators/univ_gen/chainer/prompt_generator/generated_prompts/*
+/mindmap/completion/project_instructions.py
+/mindmap/completion/prompts/
+/data/

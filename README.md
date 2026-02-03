@@ -2,7 +2,7 @@
 <p align="center"><p align="center">
         <br>
         <a href="https://dialx.ai/">
-          <img src="https://dialx.ai/dialx_logo.svg" alt="About DIALX">
+          <img src="https://dialx.ai/logo/dialx_logo.svg" alt="About DIALX">
         </a>
     </p>
 <h4 align="center">
@@ -22,7 +22,7 @@
 
 ## Overview
 
-The project is a backend part of the DIAL Mind Map Studio. 
+The project is a backend part of the DIAL Mind Map Studio.
 
 Mind Map enables users to access information through an interactive knowledge graph and natural language. The application pulls data from various sources, including documents, URLs, and other data inputs and then presents it on UI as a interactive knowledge graph, facilitating intuitive and engaging user interactions with information.
 

@@ -352,7 +352,7 @@ class DialRAGApplication(ChatCompletion):
 
             # TODO: Add helpers for merging configs from different sources
             properties = await request.request_dial_application_properties()
-            from general_mindmap.v2.dial.client import DialClient
+            from mindmap.dial.client import DialClient
 
             client = await DialClient.create_without_request(
                 DIAL_URL or "", request.headers.get("etag", ""), properties

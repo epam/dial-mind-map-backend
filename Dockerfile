@@ -77,9 +77,7 @@ COPY --from=builder --chown=appuser /opt/venv /opt/venv
 COPY --from=builder_download_nltk --chown=appuser /usr/share/nltk_data /usr/share/nltk_data
 COPY --from=builder_download_model --chown=appuser "$BGE_EMBEDDINGS_MODEL_PATH" "$BGE_EMBEDDINGS_MODEL_PATH"
 COPY --from=builder_download_model --chown=appuser "$E5_EMBEDDINGS_MODEL_PATH" "$E5_EMBEDDINGS_MODEL_PATH"
-COPY --chown=appuser ./common_utils /common_utils
-COPY --chown=appuser ./generator /generator
-COPY --chown=appuser ./general_mindmap /general_mindmap
+COPY --chown=appuser ./mindmap /mindmap
 COPY --chown=appuser ./dial_rag /dial_rag
 COPY --chown=appuser ./models /models
 
@@ -100,4 +98,4 @@ ENV ENABLE_DEBUG_COMMANDS=False
 
 # During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
 EXPOSE 5000
-CMD ["uvicorn", "general_mindmap.v2.app:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["uvicorn", "mindmap.app:app", "--host", "0.0.0.0", "--port", "5000"]

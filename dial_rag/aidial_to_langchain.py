@@ -8,7 +8,9 @@ from langchain_core.messages.utils import convert_to_messages
 
 
 def parse_tool_message(message: Message) -> str:
-    # noinspection PyTypeHints
+    if not message.tool_calls:
+        raise ValueError("Message does not contain any tool calls.")
+
     arguments_str = message.tool_calls[0].function.arguments
     arguments_dict = json.loads(arguments_str)
     return arguments_dict.get("query")
@@ -21,7 +23,8 @@ def get_content_parser() -> Callable[[Message], str]:
 
 
 def to_langchain_messages(
-    messages: Iterable[Message], content_parser: Callable[[Message], str] = None
+    messages: Iterable[Message],
+    content_parser: Callable[[Message], str] | None = None,
 ) -> List[BaseMessage]:
     if content_parser is None:
         content_parser = get_content_parser()
