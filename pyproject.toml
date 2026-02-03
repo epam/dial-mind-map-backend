@@ -41,7 +41,7 @@ pdf2image = "^1.17.0"
 pymupdf = "^1.25.3"
 more-itertools = "10.1.0"
 docarray = "0.39.1"
-unstructured = {version = "0.16.16", extras = ["doc", "docx", "pdf", "ppt", "pptx", "xlsx"]}
+unstructured = {version = "0.18.18", extras = ["doc", "docx", "pdf", "ppt", "pptx", "xlsx"]}
 cachetools = "5.3.1"
 rank-bm25 = "^0.2.2"
 optimum = {extras = ["openvino"], version = "^1.27.0"}
