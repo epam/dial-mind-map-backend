@@ -19,6 +19,7 @@ from mindmap.generators.univ_gen.adapter import GMContract as Gmc
 from mindmap.generators.univ_gen.chainer import ChainCreator
 from mindmap.generators.univ_gen.common.constants import ColVals
 from mindmap.generators.univ_gen.common.constants import DataFrameCols as Col
+from mindmap.generators.univ_gen.common.constants import EnvConsts
 from mindmap.generators.univ_gen.common.exceptions import (
     AddPipeException,
     EmptyDataException,
@@ -91,7 +92,7 @@ class PipelineHandler:
         """
         filter_instructions = await process_user_filter(request)
         style_instructions = await process_user_style(request, file_storage)
-        chain_creator = ChainCreator("gpt-4.1-2025-04-14")
+        chain_creator = ChainCreator(EnvConsts.DEFAULT_CHAT_MODEL_NAME)
         return cls(
             queue,
             file_storage,
