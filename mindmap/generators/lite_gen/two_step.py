@@ -823,7 +823,7 @@ class TwoStageGenerator(SimpleGenerator):
         human_message_content: List[Dict[str, Any]],
         questions_with_indices: List[Tuple[int, str]],
         user_instructions: str,
-        batch_size_override: int = None,
+        batch_size_override: int | None = None,
     ) -> AsyncGenerator[StatusChunk | List[Dict[str, Any]], None]:
         """
         Handles batched processing logic, yielding real-time streaming updates.
