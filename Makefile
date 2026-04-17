@@ -19,6 +19,9 @@ lint: install
 format: install
 	poetry run nox -s format
 
+test:
+	@echo 'No tests detected.'
+
 help:
 	@echo '===================='
 	@echo 'build                        - build the source and wheels archives'
