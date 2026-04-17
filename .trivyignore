@@ -1,2 +1,2 @@
-# Expires after 30 days
-CVE-2026-34070 exp:30d
+# Accept the risk until 2026-06-17
+CVE-2026-34070 exp:2026-06-17
