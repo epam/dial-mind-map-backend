@@ -50,6 +50,7 @@ openvino = "2025.2.0"
 pdfplumber = "0.11.9"
 theine = "^0.4.4"
 xgboost = "^3.0.2"
+humanfriendly = "^10.0"
 
 [[tool.poetry.source]]
 name = "PyPI"
