@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mindmap"
-version = "0.0.0"
+version = "0.13.1"
 description = "The project is a backend part of the DIAL Mind Map Studio"
 authors = ["Uladzislau Vishneuski <Uladzislau_Vishneuski@epam.com>", "Viachaslau Shpak <Viachaslau_Shpak@epam.com>"]
 homepage = "https://dialx.ai/"
@@ -27,7 +27,7 @@ torchvision = [
     { markers = "sys_platform == 'darwin'", version = "0.22.0", source = "PyPI" },
     { markers = "sys_platform != 'darwin'", version = "0.22.0+cpu", source = "pytorch" },
 ]
-pyjwt = "^2.0"
+pyjwt = "^2.11.0"
 langchain = "^0.3.13"
 langchain-core = "^0.3.28"
 numpy = "^1.22.4"
@@ -50,7 +50,18 @@ openvino = "2025.2.0"
 pdfplumber = "0.11.9"
 theine = "^0.4.4"
 xgboost = "^3.0.2"
-humanfriendly = "^10.0"
+
+# CVE-2026-21441
+urllib3 = ">= 2.6.3"
+
+# CVE-2026-23949
+jaraco-context = ">= 6.1.0"
+
+# CVE-2026-24049
+wheel = ">= 0.46.2"
+
+# CVE-2025-62727
+starlette = ">= 0.49.1"
 
 [[tool.poetry.source]]
 name = "PyPI"
