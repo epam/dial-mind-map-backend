@@ -7,8 +7,9 @@
 from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 
-from dial_rag.retrievers.description_retriever.image_details import ImageDetails
 from dial_rag.retrievers.description_retriever.answer_details import AnswerDetails
+from dial_rag.retrievers.description_retriever.page_description import ImageDetails
+
 
 @dataclass_json
 @dataclass
@@ -23,4 +24,4 @@ class QueryParams:
     max_top_results_image : int = -1
     max_top_results_text : int = -1
     date_information : bool = True
-    
+

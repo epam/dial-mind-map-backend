@@ -85,7 +85,7 @@ class ConceptDeduplicator:
                 groups, root_group_id
             )
             new_concepts, new_rels_by_name = self._process_dedup_results(
-                dedup_results,
+                dedup_results,  # pyright:ignore
                 root_result,
                 root_group_id,
                 max_cluster_ids,
@@ -109,9 +109,13 @@ class ConceptDeduplicator:
             # Resolve relationship names to the new IDs.
             newly_added_mask = concept_df.index > last_id
 
-            new_keys = concept_df.loc[newly_added_mask, Col.NAME].tolist()
-            new_vals = concept_df.index[newly_added_mask].tolist()
-            name_to_new_id = dict(zip(new_keys, new_vals))
+            new_keys = concept_df.loc[
+                newly_added_mask, Col.NAME
+            ].tolist()  # pyright:ignore
+            new_vals = concept_df.index[
+                newly_added_mask
+            ].tolist()  # pyright:ignore
+            name_to_new_id = dict(zip(new_keys, new_vals))  # pyright:ignore
 
             new_rel_rows = [
                 {

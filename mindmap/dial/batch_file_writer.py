@@ -13,7 +13,8 @@ BATCH_WRITE_REQUESTS_LIMIT = int(os.getenv("BATCH_WRITE_REQUESTS_LIMIT", 300))
 
 class File(BaseModel):
     path: str
-    etag: str | None = None
+    if_match: str | None = None
+    if_none_match: str | None = None
 
 
 class JsonFile(File):
@@ -33,12 +34,36 @@ class BatchFileWriter:
         self.client = client
 
     def add_file(
-        self, file: str, content: Dict[str, Any], etag: str | None = None
+        self,
+        file: str,
+        content: Dict[str, Any],
+        if_match: str | None = None,
+        if_none_match: str | None = None,
     ):
-        self.files.append(JsonFile(path=file, content=content, etag=etag))
+        self.files.append(
+            JsonFile(
+                path=file,
+                content=content,
+                if_match=if_match,
+                if_none_match=if_none_match,
+            )
+        )
 
-    def add_raw_file(self, file: str, content: bytes, etag: str | None = None):
-        self.files.append(RawFile(path=file, content=content, etag=etag))
+    def add_raw_file(
+        self,
+        file: str,
+        content: bytes,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+    ):
+        self.files.append(
+            RawFile(
+                path=file,
+                content=content,
+                if_match=if_match,
+                if_none_match=if_none_match,
+            )
+        )
 
     async def write_file(
         self, sem: asyncio.Semaphore, file: File, session: aiohttp.ClientSession
@@ -52,7 +77,8 @@ class BatchFileWriter:
                             file.path,
                             file.content,
                             session=session,
-                            etag=file.etag,
+                            if_match=file.if_match,
+                            if_none_match=file.if_none_match,
                             batch=True,
                         )
                     )[0],
@@ -65,7 +91,8 @@ class BatchFileWriter:
                             file.path,
                             file.content,
                             session=session,
-                            etag=file.etag,
+                            if_match=file.if_match,
+                            if_none_match=file.if_none_match,
                             batch=True,
                         )
                     )[0],

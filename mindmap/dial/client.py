@@ -43,13 +43,13 @@ class Lock:
             self._lock_etag = await self._client.write_file(
                 self._full_path(),
                 {"expired": time() + LOCK_EXPIRATION_SEC},
-                self._lock_etag,
+                if_match=self._lock_etag,
             )
         else:
             self._lock_etag = await self._client.write_file(
                 self._full_path(),
                 {"expired": time() + LOCK_EXPIRATION_SEC},
-                "-",
+                if_none_match="*",
             )
 
     async def acquire(self):
@@ -376,11 +376,13 @@ class DialClient:
             self._lock_etag = await self.write_file(
                 "lock",
                 {"expired": time() + LOCK_EXPIRATION_SEC},
-                self._lock_etag,
+                if_match=self._lock_etag,
             )
         else:
             self._lock_etag = await self.write_file(
-                "lock", {"expired": time() + LOCK_EXPIRATION_SEC}, "-"
+                "lock",
+                {"expired": time() + LOCK_EXPIRATION_SEC},
+                if_none_match="*",
             )
 
     async def open(self):
@@ -595,7 +597,8 @@ class DialClient:
         self,
         file_name: str,
         content: dict,
-        etag: str | None = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
         session: aiohttp.ClientSession | None = None,
         batch: bool = False,
     ) -> str:
@@ -604,15 +607,18 @@ class DialClient:
         else:
             logger.debug(f"Write to {file_name}.json")
 
+        headers: dict[str, Any] = {"Authorization": self._api_key}
+        if if_match is not None:
+            headers["If-Match"] = if_match
+
+        if if_none_match is not None:
+            headers["If-None-Match"] = if_none_match
+
         if session is None:
             async with aiohttp.ClientSession() as session:
                 async with session.put(
                     self.make_url(file_name),
-                    headers=(
-                        {"Authorization": self._api_key} | {"If-Match": etag}
-                        if etag
-                        else {}
-                    ),
+                    headers=headers,
                     data={"key": io.StringIO(json.dumps(content))},
                 ) as response:
                     if response.status != 200:
@@ -624,11 +630,7 @@ class DialClient:
         else:
             async with session.put(
                 self.make_url(file_name),
-                headers=(
-                    {"Authorization": self._api_key} | {"If-Match": etag}
-                    if etag
-                    else {}
-                ),
+                headers=headers,
                 data={"key": io.StringIO(json.dumps(content))},
             ) as response:
                 if response.status != 200:
@@ -642,7 +644,8 @@ class DialClient:
         self,
         file_name: str,
         content: bytes,
-        etag: str | None = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
         session: aiohttp.ClientSession | None = None,
         content_type: str | None = None,
         batch: bool = False,
@@ -651,6 +654,13 @@ class DialClient:
             logger.info(f"Write to {file_name}")
         else:
             logger.debug(f"Write to {file_name}")
+
+        headers: dict[str, Any] = {"api-key": self._api_key}
+        if if_match is not None:
+            headers["If-Match"] = if_match
+
+        if if_none_match is not None:
+            headers["If-None-Match"] = if_none_match
 
         if session is None:
             async with aiohttp.ClientSession() as session:
@@ -661,10 +671,7 @@ class DialClient:
 
                 async with session.put(
                     self.make_url_without_extension(file_name),
-                    headers=(
-                        {"api-key": self._api_key}
-                        | ({"If-Match": etag} if etag else {})
-                    ),
+                    headers=headers,
                     data=data,
                 ) as response:
                     if response.status != 200:
@@ -676,11 +683,7 @@ class DialClient:
         else:
             async with session.put(
                 self.make_url_without_extension(file_name),
-                headers=(
-                    {"api-key": self._api_key} | {"If-Match": etag}
-                    if etag
-                    else {}
-                ),
+                headers=headers,
                 data={"key": io.BytesIO(content)},
             ) as response:
                 if response.status != 200:
@@ -750,7 +753,7 @@ class DialClient:
                         del data["url"]
                         data["action"] = "UPDATE"
 
-                        yield f"data: {json.dumps(data, separators=(',',':'))}\n\n"
+                        yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
 
                     if line.startswith(": heartbeat"):
                         yield f"{line}\n\n"
@@ -758,7 +761,7 @@ class DialClient:
     async def subscribe_to_generate(
         self, request: Request, current_status: Any
     ):
-        yield f"data: {json.dumps(current_status, separators=(',',':'))}\n\n"
+        yield f"data: {json.dumps(current_status, separators=(',', ':'))}\n\n"
 
         if (
             current_status.get("title") == "Graph generated"
@@ -789,7 +792,7 @@ class DialClient:
 
                     if line.startswith("data:"):
                         data, _ = await self.read_file_and_etag("generate")
-                        yield f"data: {json.dumps(data, separators=(',',':'))}\n\n"
+                        yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
 
                         if (
                             data.get("title") == "Graph generated"
@@ -803,7 +806,7 @@ class DialClient:
     async def subscribe_to_source(
         self, request: Request, current_state: Any, url: str | None
     ):
-        yield f"data: {json.dumps(current_state, separators=(',',':'))}\n\n"
+        yield f"data: {json.dumps(current_state, separators=(',', ':'))}\n\n"
 
         if current_state["status"] != "IN_PROGRESS" or url is None:
             return
@@ -831,7 +834,7 @@ class DialClient:
 
                     if line.startswith("data:"):
                         data, _ = await self.read_file_and_etag(url)
-                        yield f"data: {json.dumps(data, separators=(',',':'))}\n\n"
+                        yield f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
 
                         if data["status"] != "IN_PROGRESS":
                             return
@@ -842,7 +845,7 @@ class DialClient:
     async def subscribe_to_appearances(
         self, request: Request, current_state: Any, last_file: str, theme: str
     ):
-        yield f"data: {json.dumps(current_state.get(theme, {}), separators=(',',':'))}\n\n"
+        yield f"data: {json.dumps(current_state.get(theme, {}), separators=(',', ':'))}\n\n"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -880,7 +883,7 @@ class DialClient:
                             else:
                                 data = {}
 
-                            yield f"data: {json.dumps(data.get(theme, {}), separators=(',',':'))}\n\n"
+                            yield f"data: {json.dumps(data.get(theme, {}), separators=(',', ':'))}\n\n"
 
                     if line.startswith(": heartbeat"):
                         yield f"{line}\n\n"
