@@ -1195,7 +1195,7 @@ async def change_active_version(
     assert history_step.changes is not None
 
     try:
-        docs, docs_etag = await client.read_file_by_name_and_etag(
+        docs, _ = await client.read_file_by_name_and_etag(
             client._metadata.documents_file
         )
         sources = docs["documents"]
