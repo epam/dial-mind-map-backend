@@ -289,7 +289,6 @@ def create_llm_chain(dial_url: str, api_key: SecretStr, rag_model: str):
         api_version="2024-08-01-preview",
         openai_api_type="azure",
         streaming=True,
-        seed=820288,
     ).configurable_alternatives(
         ConfigurableField(id="llm"),
         default_key="llm",

@@ -469,13 +469,13 @@ async def add_source(
             client._metadata.last_change = str(start_time)
             client._metadata.version = 3
 
-            docs, docs_etag = {
+            docs, _ = {
                 "documents": [],
                 "generation_status": "NOT_STARTED",
             }, ""
         else:
             last_docs_file = client._metadata.documents_file
-            docs, docs_etag = await client.read_file_by_name_and_etag(
+            docs, _ = await client.read_file_by_name_and_etag(
                 client._metadata.documents_file
             )
 
@@ -525,7 +525,7 @@ async def add_source(
         client._metadata.source_names[id] = name
 
         batch_file_writer.add_file(
-            documents_file_name, filter_sources(docs), docs_etag
+            documents_file_name, filter_sources(docs), if_none_match="*"
         )
         batch_file_writer.add_file(new_document["storage_url"], new_document)
 
@@ -861,7 +861,7 @@ async def add_version(
     processing_file_task = None
     try:
         last_docs_file = client._metadata.documents_file
-        docs, docs_etag = await client.read_file_by_name_and_etag(
+        docs, _ = await client.read_file_by_name_and_etag(
             client._metadata.documents_file
         )
         sources = docs["documents"]
@@ -963,7 +963,7 @@ async def add_version(
                 new_document = new_document | status_to_json(status)
 
         batch_file_writer.add_file(
-            documents_file_name, filter_sources(docs), docs_etag
+            documents_file_name, filter_sources(docs), if_none_match="*"
         )
         batch_file_writer.add_file(new_document["storage_url"], new_document)
 
@@ -1233,7 +1233,9 @@ async def change_active_version(
         client._metadata.documents_file = new_documents_file_name
 
         batch_file_writer.add_file(
-            new_documents_file_name, filter_sources(docs), docs_etag
+            new_documents_file_name,
+            filter_sources(docs),
+            if_none_match="*",
         )
         history_step.changes.append(
             HistoryItem(
