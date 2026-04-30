@@ -109,8 +109,12 @@ class ConceptDeduplicator:
             # Resolve relationship names to the new IDs.
             newly_added_mask = concept_df.index > last_id
 
-            new_keys = concept_df.loc[newly_added_mask, Col.NAME].tolist()  # pyright:ignore
-            new_vals = concept_df.index[newly_added_mask].tolist()  # pyright:ignore
+            new_keys = concept_df.loc[
+                newly_added_mask, Col.NAME
+            ].tolist()  # pyright:ignore
+            new_vals = concept_df.index[
+                newly_added_mask
+            ].tolist()  # pyright:ignore
             name_to_new_id = dict(zip(new_keys, new_vals))  # pyright:ignore
 
             new_rel_rows = [
