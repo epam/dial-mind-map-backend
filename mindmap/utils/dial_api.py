@@ -98,6 +98,7 @@ async def build_references(
                             "doc_type": doc["type"],
                             "doc_content_type": doc["content_type"],
                             "doc_url": doc["url"],
+                            "public_url": doc.get("public_url"),
                             "content": doc["pages"][int(chunk_id) - 1],
                             "content_type": "image/jpeg",
                         }
@@ -133,6 +134,7 @@ async def build_references(
                             "doc_type": doc["type"],
                             "doc_content_type": doc["content_type"],
                             "doc_url": doc["url"],
+                            "public_url": doc.get("public_url"),
                             "content_type": "text/markdown",
                             "source_name": source_name,
                         }
