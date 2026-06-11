@@ -433,6 +433,7 @@ async def add_source(
     file: UploadFile | None = File(None),
     link: str = Form(None),
     name: str = Form(""),
+    public_url: str | None = Form(None),
 ):
     start_time = time()
 
@@ -484,6 +485,9 @@ async def add_source(
             f"sources/{id}/versions/1/{start_time}_state"
         )
         docs["documents"].append(new_document)
+
+        if public_url:
+            new_document["public_url"] = public_url
 
         if file:
             new_document["name"] = urllib.parse.unquote(file.filename or "")
@@ -834,6 +838,7 @@ async def add_version(
     source_id: str,
     file: UploadFile | None = File(None),
     link: str = Form(None),
+    public_url: str | None = Form(None),
 ):
     start_time = time()
 
@@ -924,6 +929,9 @@ async def add_version(
             f"sources/{source_id}/versions/{version}/{start_time}_state"
         )
         docs["documents"].append(new_document)
+
+        if public_url:
+            new_document["public_url"] = public_url
 
         if file:
             new_document["name"] = urllib.parse.unquote(file.filename or "")
@@ -1032,6 +1040,7 @@ async def try_process_again(
     version: int,
     file: UploadFile | None = File(None),
     link: str = Form(None),
+    public_url: str | None = Form(None),
 ):
     start_time = time()
 
@@ -1079,6 +1088,9 @@ async def try_process_again(
         new_document["updated"] = start_time
         new_document["status"] = "IN_PROGRESS"
         new_document["status_description"] = None
+
+        if public_url:
+            new_document["public_url"] = public_url
 
         if file:
             new_document["name"] = urllib.parse.unquote(file.filename or "")
