@@ -1,6 +1,10 @@
+import os
+
 import nox
 
 nox.options.reuse_existing_virtualenvs = True
+if os.environ.get("CI"):
+    nox.options.default_venv_backend = "none"
 nox.options.sessions = ("lint", "test")
 
 SRC = "mindmap"
