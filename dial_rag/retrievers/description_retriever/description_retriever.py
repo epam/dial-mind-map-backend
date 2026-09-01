@@ -177,7 +177,7 @@ def _extract_chunks(
     return page_indexes, description_chunks
 
 
-def _build_prompt(image_base64, image_details, image_max_size):
+def _build_prompt(image_base64, image_details):
     prompt_template = PAGE_DESCRIPTION_PROMPT_TEMPLATE
     content = [{"type": "text", "text": prompt_template}]
     image_content = {
@@ -185,7 +185,6 @@ def _build_prompt(image_base64, image_details, image_max_size):
         "image_url": {
             "url": f"data:image/png;base64,{image_base64}",
             "detail": image_details,  # 'low', 'high', or 'auto'
-            "resize": image_max_size,
         },
     }
     content.append(image_content)
@@ -214,9 +213,7 @@ async def _get_page_description(
     llm, page_bitmap_base64: str
 ) -> PageDescription:
     logger.debug("Generated description for the page.")
-    prompt = _build_prompt(
-        page_bitmap_base64, "low", MAX_PNG_SIZE_FOR_DESCRIPTION
-    )
+    prompt = _build_prompt(page_bitmap_base64, "low")
     page_description_str = await _invoke_image_list_prompt(llm, prompt)
 
     return PageDescription.from_json_str(page_description_str)
