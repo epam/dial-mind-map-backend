@@ -3,8 +3,8 @@ from langchain_core.documents import Document as LCDoc
 from mindmap.generators.univ_gen.chainer.model_handler import LLMUtils
 from mindmap.generators.univ_gen.common.constants import DataFrameCols as Col
 from mindmap.generators.univ_gen.core.utils.pdf_handler import (
+    get_pages_as_base64,
     get_text_pages,
-    page_to_base64,
 )
 
 from ..aggregation import aggregate_page_content
@@ -34,9 +34,12 @@ class PDFChunker(BaseDocChunker):
             return []
 
         doc_pages = await get_text_pages(doc_with_content.content)
+        page_images = get_pages_as_base64(doc_with_content.content)
         pages: list[PageContent] = []
         for page_num, page_text in enumerate(doc_pages, 1):
-            image_data = page_to_base64(doc_with_content.content, page_num)
+            image_data = (
+                page_images[page_num - 1] if page_num - 1 < len(page_images) else ""
+            )
             text_tokens = len(ENCODER.encode(page_text.page_content))
             img_tokens = calculate_image_tokens(image_data) if image_data else 0
             pages.append(
@@ -127,9 +130,12 @@ class WholePDFChunker(BaseDocChunker):
 
         # 1. Extract all pages and their content
         doc_pages = await get_text_pages(doc_with_content.content)
+        page_images = get_pages_as_base64(doc_with_content.content)
         pages: list[PageContent] = []
         for page_num, page_text in enumerate(doc_pages, 1):
-            image_data = page_to_base64(doc_with_content.content, page_num)
+            image_data = (
+                page_images[page_num - 1] if page_num - 1 < len(page_images) else ""
+            )
             text_tokens = len(ENCODER.encode(page_text.page_content))
             img_tokens = calculate_image_tokens(image_data) if image_data else 0
             pages.append(
