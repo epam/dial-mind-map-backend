@@ -38,7 +38,9 @@ class PDFChunker(BaseDocChunker):
         pages: list[PageContent] = []
         for page_num, page_text in enumerate(doc_pages, 1):
             image_data = (
-                page_images[page_num - 1] if page_num - 1 < len(page_images) else ""
+                page_images[page_num - 1]
+                if page_num - 1 < len(page_images)
+                else ""
             )
             text_tokens = len(ENCODER.encode(page_text.page_content))
             img_tokens = calculate_image_tokens(image_data) if image_data else 0
@@ -134,7 +136,9 @@ class WholePDFChunker(BaseDocChunker):
         pages: list[PageContent] = []
         for page_num, page_text in enumerate(doc_pages, 1):
             image_data = (
-                page_images[page_num - 1] if page_num - 1 < len(page_images) else ""
+                page_images[page_num - 1]
+                if page_num - 1 < len(page_images)
+                else ""
             )
             text_tokens = len(ENCODER.encode(page_text.page_content))
             img_tokens = calculate_image_tokens(image_data) if image_data else 0
