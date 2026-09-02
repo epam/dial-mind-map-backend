@@ -32,7 +32,12 @@ async def get_text_pages(pdf_bytes: bytes) -> list[Document]:
         return []
 
 
-def _page_to_base64(page: "fitz.Page") -> str:
+def open_pdf_document(pdf_bytes: bytes) -> fitz.Document:
+    return fitz.open(stream=pdf_bytes, filetype="pdf")
+
+
+def page_to_base64(pdf_document: fitz.Document, page_number: int) -> str:
+    page = pdf_document.load_page(page_number - 1)  # input is one-indexed
     pix = page.get_pixmap()
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
@@ -40,8 +45,3 @@ def _page_to_base64(page: "fitz.Page") -> str:
     img.save(buffer, format="PNG")
 
     return base64.b64encode(buffer.getvalue()).decode()
-
-
-def get_pages_as_base64(pdf_bytes: bytes) -> list[str]:
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as pdf_document:
-        return [_page_to_base64(page) for page in pdf_document]
